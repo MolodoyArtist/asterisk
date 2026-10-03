@@ -37,6 +37,7 @@ from .common import (
     redact_log,
     render_nginx,
     render_xray,
+    telegram_uri,
     validate_domain,
     validate_name,
     validate_state,
@@ -52,6 +53,9 @@ NGINX_BIN = os.environ.get("VPNCTL_NGINX_BIN", "/usr/sbin/nginx")
 SS_BIN = os.environ.get("VPNCTL_SS_BIN", "/usr/bin/ss")
 JOURNALCTL_BIN = os.environ.get("VPNCTL_JOURNALCTL_BIN", "/usr/bin/journalctl")
 QRENCODE_BIN = os.environ.get("VPNCTL_QRENCODE_BIN", "/usr/bin/qrencode")
+MTPROXY_SCRIPT = os.environ.get("VPNCTL_MTPROXY_SCRIPT", "/usr/local/lib/vpnctl/mtproxy")
+MTPROXY_ENV = Path(os.environ.get("VPNCTL_MTPROXY_ENV", "/etc/mtproxy/vpnctl.env"))
+UFW_BIN = os.environ.get("VPNCTL_UFW_BIN", "/usr/sbin/ufw")
 LOCK = threading.RLock()
 
 # Subprocess calls use fixed argument vectors for local system tools; shell mode is never used.
@@ -226,7 +230,7 @@ def action_status(_: dict[str, Any]) -> dict[str, Any]:
         certs.append(certificate_info(state["domain"]))
     metrics = system_metrics()
     return {
-        "services": {"xray": service_active("xray"), "nginx": service_active("nginx"), "panel": service_active("vpnctl-web")},
+        "services": {"xray": service_active("xray"), "nginx": service_active("nginx"), "panel": service_active("vpnctl-web"), "telegram": not state.get("telegram", {}).get("enabled") or service_active("mtproxy")},
         "metrics": metrics,
         "checks": {
             "memory": metrics["memory_available"] >= 64 * 1024 * 1024,
@@ -238,6 +242,7 @@ def action_status(_: dict[str, Any]) -> dict[str, Any]:
         "public_ipv6": state.get("public_ipv6"),
         "certificates": certs,
         "client_count": len([c for c in state.get("clients", []) if c.get("enabled", True)]),
+        "telegram": {"enabled": bool(state.get("telegram", {}).get("enabled")), "port": state.get("telegram", {}).get("port")},
     }
 
 
@@ -305,6 +310,114 @@ def action_client_qr(payload: dict[str, Any]) -> dict[str, Any]:
     return {"png": base64.b64encode(result.stdout).decode("ascii")}
 
 
+def _qr_png(value: str) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            [QRENCODE_BIN, "-t", "PNG", "-s", "6", "-m", "2", "-o", "-"], input=value.encode(), capture_output=True, timeout=15, check=False  # nosec B603
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgentError("QR code generation timed out.") from exc
+    if result.returncode != 0:
+        raise AgentError("QR code generation failed.")
+    return {"png": base64.b64encode(result.stdout).decode("ascii")}
+
+
+def _write_mtproxy_env(state: dict[str, Any]) -> None:
+    telegram = state["telegram"]
+    atomic_write(MTPROXY_ENV, f"MTPROXY_PORT={telegram['port']}\nMTPROXY_SECRET={telegram['secret']}\n", 0o640)
+    try:
+        shutil.chown(MTPROXY_ENV, user="root", group="mtproxy")
+    except LookupError:
+        pass
+
+
+def action_telegram_status(_: dict[str, Any]) -> dict[str, Any]:
+    state = load_state()
+    telegram = state.get("telegram", {})
+    result = {"enabled": bool(telegram.get("enabled")), "active": service_active("mtproxy") if telegram.get("enabled") else False}
+    if telegram.get("enabled"):
+        result.update({"port": telegram["port"], "uri": telegram_uri(state)})
+    return result
+
+
+def action_telegram_enable(_: dict[str, Any]) -> dict[str, Any]:
+    with LOCK:
+        state = load_state()
+        if state.get("telegram", {}).get("enabled"):
+            return action_telegram_status({})
+        prepared = run([MTPROXY_SCRIPT, "prepare"], 600)
+        if prepared.returncode != 0:
+            raise AgentError("Telegram proxy installation failed. The primary proxy was not changed.")
+        refreshed = run([MTPROXY_SCRIPT, "refresh"], 120)
+        if refreshed.returncode != 0:
+            raise AgentError("Telegram proxy configuration could not be fetched. The primary proxy was not changed.")
+        updated = json.loads(json.dumps(state))
+        updated["telegram"] = {"enabled": True, "port": 8444, "secret": os.urandom(16).hex(), "enabled_at": int(time.time())}
+        validate_state(updated)
+        _write_mtproxy_env(updated)
+        firewall = run([UFW_BIN, "allow", "8444/tcp", "comment", "Optional Telegram MTProxy"], 30)
+        if firewall.returncode != 0:
+            raise AgentError("Firewall could not open the Telegram proxy port. The primary proxy was not changed.")
+        run([SYSTEMCTL_BIN, "daemon-reload"], 20)
+        started = run([SYSTEMCTL_BIN, "enable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
+        if started.returncode != 0:
+            run([SYSTEMCTL_BIN, "disable", "--now", "mtproxy", "mtproxy-refresh.timer"], 30)
+            MTPROXY_ENV.unlink(missing_ok=True)
+            raise AgentError("Telegram proxy did not start. The primary proxy was not changed.")
+        try:
+            save_state(updated)
+        except OSError as exc:
+            run([SYSTEMCTL_BIN, "disable", "--now", "mtproxy", "mtproxy-refresh.timer"], 30)
+            MTPROXY_ENV.unlink(missing_ok=True)
+            raise AgentError("Telegram proxy settings could not be saved. The service was stopped.") from exc
+        return {"enabled": True, "port": 8444, "uri": telegram_uri(updated)}
+
+
+def action_telegram_disable(_: dict[str, Any]) -> dict[str, Any]:
+    with LOCK:
+        state = load_state()
+        if not state.get("telegram", {}).get("enabled"):
+            return {"enabled": False}
+        stopped = run([SYSTEMCTL_BIN, "disable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
+        if stopped.returncode != 0:
+            raise AgentError("Telegram proxy could not be stopped.")
+        updated = json.loads(json.dumps(state))
+        updated["telegram"] = {"enabled": False}
+        try:
+            save_state(updated)
+        except OSError as exc:
+            run([SYSTEMCTL_BIN, "enable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
+            raise AgentError("Telegram proxy settings could not be saved. The service was restored.") from exc
+        MTPROXY_ENV.unlink(missing_ok=True)
+        return {"enabled": False}
+
+
+def action_telegram_rotate(_: dict[str, Any]) -> dict[str, Any]:
+    with LOCK:
+        state = load_state()
+        if not state.get("telegram", {}).get("enabled"):
+            raise AgentError("Enable the Telegram proxy first.")
+        updated = json.loads(json.dumps(state))
+        updated["telegram"]["secret"] = os.urandom(16).hex()
+        _write_mtproxy_env(updated)
+        restarted = run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
+        if restarted.returncode != 0:
+            _write_mtproxy_env(state)
+            run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
+            raise AgentError("Telegram proxy restart failed. The previous secret was restored.")
+        try:
+            save_state(updated)
+        except OSError as exc:
+            _write_mtproxy_env(state)
+            run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
+            raise AgentError("Telegram proxy settings could not be saved. The previous secret was restored.") from exc
+        return {"uri": telegram_uri(updated)}
+
+
+def action_telegram_qr(_: dict[str, Any]) -> dict[str, Any]:
+    return _qr_png(telegram_uri(load_state()))
+
+
 def action_domain_check(payload: dict[str, Any]) -> dict[str, Any]:
     return check_domain(load_state(), str(payload.get("domain", "")))
 
@@ -367,7 +480,7 @@ def action_certificate_renew(_: dict[str, Any]) -> dict[str, Any]:
 
 def action_logs(_: dict[str, Any]) -> dict[str, Any]:
     result = run(
-        [JOURNALCTL_BIN, "-u", "xray", "-u", "nginx", "-u", "vpnctl-agent", "-u", "vpnctl-web", "-u", "vpnctl-health", "-n", "160", "--no-pager", "-o", "short-iso"],
+        [JOURNALCTL_BIN, "-u", "xray", "-u", "nginx", "-u", "mtproxy", "-u", "vpnctl-agent", "-u", "vpnctl-web", "-u", "vpnctl-health", "-n", "160", "--no-pager", "-o", "short-iso"],
         20,
     )
     text = redact_log(result.stdout[-30000:])
@@ -403,6 +516,11 @@ ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "domain_check": action_domain_check,
     "domain_add": action_domain_add,
     "certificate_renew": action_certificate_renew,
+    "telegram_status": action_telegram_status,
+    "telegram_enable": action_telegram_enable,
+    "telegram_disable": action_telegram_disable,
+    "telegram_rotate": action_telegram_rotate,
+    "telegram_qr": action_telegram_qr,
     "logs": action_logs,
     "reset_password": action_reset_password,
 }

@@ -25,6 +25,7 @@ NGINX_SITE = Path(os.environ.get("VPNCTL_NGINX_SITE", "/etc/nginx/sites-availabl
 DEFAULT_CERT = CONFIG_DIR / "tls" / "default.crt"
 DEFAULT_KEY = CONFIG_DIR / "tls" / "default.key"
 PANEL_PORT = 8443
+MTPROXY_PORT = 8444
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$", re.IGNORECASE)
@@ -153,6 +154,26 @@ def validate_state(state: dict[str, Any]) -> None:
             raise ValidationError("Client records must be unique and valid.")
         names.add(name.casefold())
         ids.add(identifier)
+    telegram = state.get("telegram")
+    if telegram is not None:
+        if not isinstance(telegram, dict) or not isinstance(telegram.get("enabled"), bool):
+            raise ValidationError("Telegram proxy settings are invalid.")
+        if telegram["enabled"]:
+            port = telegram.get("port")
+            secret = telegram.get("secret")
+            if not isinstance(port, int) or not 1024 <= port <= 65535 or port in {443, PANEL_PORT}:
+                raise ValidationError("Telegram proxy port is invalid.")
+            if not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{32}", secret):
+                raise ValidationError("Telegram proxy secret is invalid.")
+
+
+def telegram_uri(state: dict[str, Any]) -> str:
+    telegram = state.get("telegram")
+    if not isinstance(telegram, dict) or not telegram.get("enabled"):
+        raise ValidationError("Telegram proxy is not enabled.")
+    # `dd` asks Telegram clients to use MTProxy random padding. The server keeps
+    # the underlying 16-byte secret, as required by the official implementation.
+    return "tg://proxy?" + urllib.parse.urlencode({"server": state["public_ip"], "port": telegram["port"], "secret": "dd" + telegram["secret"]})
 
 
 def hash_password(password: str, salt: bytes | None = None) -> dict[str, Any]:

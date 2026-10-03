@@ -70,10 +70,11 @@ run_update() {
   VPNCTL_XRAY_STAGE_DIR="${case_dir}/xray-stage" \
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
   VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
+  VPNCTL_HELPER_DIR="${case_dir}/helpers" \
   VPNCTL_PYTHON_BIN=/usr/bin/python3 \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
-  bash "${ROOT}/scripts/update.sh"
+  VPNCTL_SMOKE_ALLOW_NONROOT=1 bash "${ROOT}/scripts/update.sh"
 }
 
 success_dir="${TEMP_ROOT}/success"

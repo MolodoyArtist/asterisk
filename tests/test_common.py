@@ -15,6 +15,8 @@ from vpnctl.agent import (
     action_domain_add,
     action_ip_disable,
     action_reset_password,
+    action_telegram_enable,
+    action_telegram_rotate,
     check_domain,
     dispatch,
 )
@@ -28,6 +30,7 @@ from vpnctl.common import (
     redact_log,
     render_nginx,
     render_xray,
+    telegram_uri,
     validate_domain,
     validate_name,
     validate_state,
@@ -92,6 +95,15 @@ class CommonTests(unittest.TestCase):
         self.assertIn(":8443", domain_uri)
         self.assertIn("sni=access.example.com", domain_uri)
         self.assertIn("host=access.example.com", domain_uri)
+
+    def test_telegram_uri_uses_separate_port_and_padding_secret(self):
+        state = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})
+        uri = telegram_uri(state)
+        self.assertIn("server=192.0.2.10", uri)
+        self.assertIn("port=8444", uri)
+        self.assertIn("secret=dd0123456789abcdef0123456789abcdef", uri)
+        with self.assertRaises(ValidationError):
+            validate_state(dict(state, telegram={"enabled": True, "port": 443, "secret": "0123456789abcdef0123456789abcdef"}))
 
     def test_rendered_xray_has_no_access_log(self):
         config = json.loads(render_xray(STATE))
@@ -242,6 +254,59 @@ class CommonTests(unittest.TestCase):
         ):
             action_client_qr({"name": "phone"})
 
+    def test_telegram_enable_does_not_touch_xray_or_nginx(self):
+        original = dict(STATE, schema=2)
+        calls = []
+
+        def fake_run(command, timeout=60):
+            calls.append(command)
+            return mock.Mock(returncode=0)
+
+        with (
+            mock.patch("vpnctl.agent.load_state", return_value=original),
+            mock.patch("vpnctl.agent.run", side_effect=fake_run),
+            mock.patch("vpnctl.agent._write_mtproxy_env"),
+            mock.patch("vpnctl.agent.save_state") as save_state,
+        ):
+            result = action_telegram_enable({})
+        self.assertTrue(result["enabled"])
+        self.assertIn("port=8444", result["uri"])
+        self.assertTrue(any(command[-1] == "prepare" for command in calls))
+        self.assertFalse(any("xray" in command or "nginx" in command for command in calls))
+        self.assertTrue(save_state.called)
+
+    def test_telegram_rotation_restores_secret_when_restart_fails(self):
+        original = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})
+        with (
+            mock.patch("vpnctl.agent.load_state", return_value=original),
+            mock.patch("vpnctl.agent._write_mtproxy_env") as write_env,
+            mock.patch("vpnctl.agent.run", side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]),
+            self.assertRaisesRegex(AgentError, "previous secret was restored"),
+        ):
+            action_telegram_rotate({})
+        self.assertEqual(write_env.call_count, 2)
+        self.assertEqual(write_env.call_args_list[-1].args[0], original)
+
+    def test_telegram_enable_stops_service_when_state_cannot_be_saved(self):
+        original = dict(STATE, schema=2)
+        commands = []
+
+        def fake_run(command, timeout=60):
+            commands.append(command)
+            return mock.Mock(returncode=0)
+
+        with (
+            mock.patch("vpnctl.agent.load_state", return_value=original),
+            mock.patch("vpnctl.agent.run", side_effect=fake_run),
+            mock.patch("vpnctl.agent._write_mtproxy_env"),
+            mock.patch("vpnctl.agent.MTPROXY_ENV") as env_file,
+            mock.patch("vpnctl.agent.save_state", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(AgentError, "service was stopped"),
+        ):
+            action_telegram_enable({})
+        env_file.unlink.assert_called_once_with(missing_ok=True)
+        self.assertTrue(any(command[1:3] == ["disable", "--now"] for command in commands))
+
     def test_xray_restart_does_not_restart_control_plane(self):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "vpnctl-agent.service").read_text()
         self.assertIn("Wants=nginx.service xray.service", unit)
@@ -249,6 +314,9 @@ class CommonTests(unittest.TestCase):
         xray_unit = (Path(__file__).resolve().parents[1] / "systemd" / "xray.service").read_text()
         self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", xray_unit)
         self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", xray_unit)
+        mtproxy_unit = (Path(__file__).resolve().parents[1] / "systemd" / "mtproxy.service").read_text()
+        self.assertNotIn("443", mtproxy_unit)
+        self.assertIn("ProtectProc=invisible", mtproxy_unit)
 
 
 if __name__ == "__main__":

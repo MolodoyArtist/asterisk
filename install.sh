@@ -97,9 +97,14 @@ install -d -o root -g root -m 0755 /etc/vpnctl/tls "${ACME_ROOT}" /run/vpnctl
 log "Installing appliance files"
 install -d -o root -g root -m 0755 "${INSTALL_DIR}"
 cp -a "${SOURCE_DIR}/src" "${INSTALL_DIR}/"
+cp -a "${SOURCE_DIR}/scripts" "${INSTALL_DIR}/"
 find "${INSTALL_DIR}" -type d -exec chmod 0755 {} +
 find "${INSTALL_DIR}" -type f -exec chmod 0644 {} +
+chmod 0755 "${INSTALL_DIR}/scripts/mtproxy.sh" "${INSTALL_DIR}/scripts/mtproxy-run"
 install -m 0644 "${SOURCE_DIR}"/systemd/*.service "${SOURCE_DIR}"/systemd/*.timer /etc/systemd/system/
+install -d -o root -g root -m 0755 /usr/local/lib/vpnctl
+install -m 0755 "${INSTALL_DIR}/scripts/mtproxy.sh" /usr/local/lib/vpnctl/mtproxy
+install -m 0755 "${INSTALL_DIR}/scripts/mtproxy-run" /usr/local/lib/vpnctl/mtproxy-run
 cat >/usr/local/bin/vpnctl <<'EOF'
 #!/usr/bin/env bash
 export PYTHONPATH=/opt/vpnctl/src

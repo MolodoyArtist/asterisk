@@ -16,6 +16,7 @@ when the owner later supplies a domain.
 - Random portal credentials, REALITY keys, device identifier, and XHTTP path.
 - A separate VLESS link and QR code for every device.
 - A guided domain-addition flow in the portal.
+- An optional, disabled-by-default Telegram-only MTProto profile on TCP/8444.
 - Automatic certificate renewal.
 - Service status, local metrics, and logs scrubbed of addresses and secrets.
 - No 3x-ui, database, analytics, or browser-side third-party scripts.
@@ -26,7 +27,8 @@ when the owner later supplies a domain.
 - x86_64 or arm64 architecture.
 - A public IPv4 address.
 - Root access or a user with `sudo`.
-- Inbound TCP ports 80, 443 and 8443 allowed by the provider firewall.
+- Inbound TCP ports 80, 443 and 8443 allowed by the provider firewall. TCP/8444
+  is needed only if you later enable the optional Telegram profile.
 
 The installer changes Nginx and UFW. Run it on a new VPS, not on a server that
 already hosts websites.
@@ -36,7 +38,7 @@ already hosts websites.
 Connect to the VPS over SSH and run:
 
 ```bash
-curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.1/vpnctl-bootstrap-v0.2.1.sh | sudo bash
+curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.2/vpnctl-bootstrap-v0.2.2.sh | sudo bash
 ```
 
 Do not replace the release tag with `main`. The bootstrap contains the expected
@@ -119,11 +121,37 @@ sudo vpnctl client delete old-phone
 sudo vpnctl domain check access.example.com
 sudo vpnctl domain add access.example.com
 sudo vpnctl certificate renew
+sudo vpnctl telegram status
+sudo vpnctl telegram enable
+sudo vpnctl telegram rotate
+sudo vpnctl telegram disable
 sudo vpnctl admin reset-password
 ```
 
 The old password cannot be recovered. Resetting it creates a new password,
 prints it once, and invalidates existing portal sessions.
+
+## Optional Telegram MTProto
+
+Open **Telegram** in the portal and choose **Enable Telegram proxy**. This is
+an independent, Telegram-only service: it uses TCP/8444 and a distinct secret;
+it never shares port 443, VLESS credentials, Xray configuration or Nginx with
+the primary profiles. The portal displays a `tg://` import link and QR code.
+
+The implementation is built from a checksum-pinned archive of Telegram's
+official MTProxy source only when the feature is enabled. Its Telegram routing
+configuration refreshes daily. The public link requests MTProxy random padding
+using the `dd` prefix. Rotate the link if it is disclosed; all devices using the
+old Telegram link will immediately stop working. Disable stops the service and
+its timer; the primary VLESS profiles remain unchanged.
+
+The optional official MTProxy build currently requires an x86_64 VPS. The main
+VLESS appliance continues to support both x86_64 and arm64.
+
+MTProto is not a general VPN and does not carry browser or app traffic outside
+Telegram. It also makes the server a Telegram proxy endpoint, so a censor can
+still block the VPS IP or this separate port. Do not enable it if a separate
+Telegram-only endpoint is not useful to you.
 
 Initial credentials are also stored root-only in `/root/vpnctl-install.json`.
 Delete the file after saving the credentials:
@@ -136,7 +164,8 @@ sudo rm /root/vpnctl-install.json
 
 - Xray REALITY listens directly on TCP/443; the XHTTP inbound is loopback-only
   and exists only after a domain is added. SSH, HTTP, TCP/443 and TCP/8443 are
-  externally reachable.
+  externally reachable. TCP/8444 is opened only after enabling the optional
+  Telegram profile; MTProxy statistics remain loopback-only.
 - HTTP serves ACME validation only; the portal never accepts credentials over HTTP.
 - Unknown Host/SNI values and an invalid XHTTP path receive a normal 404.
 - Access logs for the portal and XHTTP are disabled.

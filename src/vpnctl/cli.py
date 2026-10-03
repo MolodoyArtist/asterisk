@@ -40,6 +40,13 @@ def main() -> None:
     cert_sub = cert.add_subparsers(dest="cert_command", required=True)
     cert_sub.add_parser("renew")
 
+    telegram = sub.add_parser("telegram")
+    telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
+    telegram_sub.add_parser("status")
+    telegram_sub.add_parser("enable")
+    telegram_sub.add_parser("disable")
+    telegram_sub.add_parser("rotate")
+
     args = parser.parse_args()
     try:
         if args.command in {"status", "doctor"}:
@@ -70,6 +77,8 @@ def main() -> None:
                 emit(call("domain_add", {"domain": args.hostname}))
         elif args.command == "certificate":
             emit(call("certificate_renew"))
+        elif args.command == "telegram":
+            emit(call(f"telegram_{args.telegram_command}"))
     except RPCError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

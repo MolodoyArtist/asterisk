@@ -14,6 +14,7 @@ XRAY_ASSET_DIR="${VPNCTL_XRAY_ASSET_DIR:-/usr/local/share/xray}"
 AUTH_FILE="${VPNCTL_AUTH_FILE:-/var/lib/vpnctl/auth.json}"
 CLI_BIN="${VPNCTL_CLI_BIN:-/usr/local/bin/vpnctl}"
 PYTHON_BIN="${VPNCTL_PYTHON_BIN:-/usr/bin/python3}"
+HELPER_DIR="${VPNCTL_HELPER_DIR:-/usr/local/lib/vpnctl}"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-update.XXXXXX)"
 STAGED_SRC="${INSTALL_DIR}/src.update"
@@ -141,6 +142,9 @@ BACKUP_OWNED=1
 mv "${STAGED_SRC}" "${INSTALL_DIR}/src"
 STAGED_OWNED=0
 install -m 0644 "${ROOT}"/systemd/*.service "${ROOT}"/systemd/*.timer "${SYSTEMD_DIR}/"
+install -d -m 0755 "${HELPER_DIR}"
+install -m 0755 "${ROOT}/scripts/mtproxy.sh" "${HELPER_DIR}/mtproxy"
+install -m 0755 "${ROOT}/scripts/mtproxy-run" "${HELPER_DIR}/mtproxy-run"
 
 log "Regenerating configuration"
 "${SYSTEMCTL_BIN}" daemon-reload

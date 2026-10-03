@@ -186,6 +186,29 @@ class WebTests(unittest.TestCase):
         self.assertTrue(response_headers["Location"].startswith("/domain?"))
         self.assertFalse(response_headers["Location"].startswith("https://"))
 
+    def test_telegram_workflow_requires_csrf_and_stays_local(self):
+        headers, csrf = self.authenticated_headers()
+        with mock.patch("vpnctl.web.call", return_value={"enabled": False, "active": False}):
+            status, _, body = self.request("GET", "/telegram", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertIn("Optional MTProto", body)
+        body = urllib.parse.urlencode({"csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        with mock.patch("vpnctl.web.call", return_value={"enabled": True}) as call:
+            status, response_headers, _ = self.request("POST", "/telegram/enable", body, headers)
+        self.assertEqual(status, 303)
+        self.assertEqual(response_headers["Location"], "/telegram?enabled=1")
+        call.assert_called_once_with("telegram_enable", {})
+
+    def test_telegram_qr_uses_dedicated_agent_action(self):
+        headers, _ = self.authenticated_headers()
+        png = base64.b64encode(b"telegram-png").decode()
+        with mock.patch("vpnctl.web.call", return_value={"png": png}) as call:
+            status, _, body = self.request("GET", "/telegram/qr", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "telegram-png")
+        call.assert_called_once_with("telegram_qr")
+
     def test_unreadable_auth_file_returns_503_without_leaking_hash_slot(self):
         original = web.AUTH_FILE
         web.AUTH_FILE = Path(self.tempdir.name) / "missing.json"

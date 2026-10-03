@@ -47,7 +47,7 @@ def layout(title: str, body: str, authenticated: bool = True, csrf: str | None =
     nav = ""
     if authenticated:
         logout = f'<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{h(csrf or "")}"><button>Sign out</button></form>' if csrf else ""
-        nav = f"""<nav><a href="/">Overview</a><a href="/clients">Devices</a><a href="/domain">Domain</a><a href="/logs">Logs</a><span class="grow"></span>{logout}</nav>"""
+        nav = f"""<nav><a href="/">Overview</a><a href="/clients">Devices</a><a href="/domain">Domain</a><a href="/telegram">Telegram</a><a href="/logs">Logs</a><span class="grow"></span>{logout}</nav>"""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>{h(title)}</title><style>{CSS}</style></head><body><main>{nav}{body}</main></body></html>"""
 
 
@@ -134,12 +134,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.clients(session)
             elif parsed.path == "/domain":
                 self.domain(session)
+            elif parsed.path == "/telegram":
+                self.telegram(session)
             elif parsed.path == "/logs":
                 self.logs(session)
             elif parsed.path == "/qr":
                 name = urllib.parse.parse_qs(parsed.query).get("name", [""])[0]
                 profile = urllib.parse.parse_qs(parsed.query).get("profile", ["reality"])[0]
                 self.qr(name, profile)
+            elif parsed.path == "/telegram/qr":
+                self.telegram_qr()
             else:
                 self.send_error(404)
         except RPCError as exc:
@@ -166,6 +170,9 @@ class Handler(BaseHTTPRequestHandler):
             "/domain/check",
             "/domain/add",
             "/certificates/renew",
+            "/telegram/enable",
+            "/telegram/disable",
+            "/telegram/rotate",
         }
         if self.path not in known_paths:
             self.send_error(404)
@@ -186,6 +193,9 @@ class Handler(BaseHTTPRequestHandler):
                 "/domain/check": ("domain_check", {"domain": fields.get("domain", "")}, "/domain?checked=1"),
                 "/domain/add": ("domain_add", {"domain": fields.get("domain", "")}, "/domain?added=1"),
                 "/certificates/renew": ("certificate_renew", {}, "/?renewed=1"),
+                "/telegram/enable": ("telegram_enable", {}, "/telegram?enabled=1"),
+                "/telegram/disable": ("telegram_disable", {}, "/telegram?disabled=1"),
+                "/telegram/rotate": ("telegram_rotate", {}, "/telegram?rotated=1"),
             }
             action, payload, target = routes[self.path]
             call(action, payload)
@@ -193,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                 target += "&domain=" + urllib.parse.quote(fields["domain"])
             self.redirect(target)
         except RPCError as exc:
-            back = "/domain" if self.path.startswith("/domain/") else "/clients" if self.path.startswith("/clients/") else "/"
+            back = "/domain" if self.path.startswith("/domain/") else "/telegram" if self.path.startswith("/telegram/") else "/clients" if self.path.startswith("/clients/") else "/"
             self.send_html(layout("Error", f"<section><h1>Could not complete that step</h1><p>{h(exc)}</p><p><a href=\"{back}\">Go back</a></p></section>"), 400)
         except (KeyError, TypeError, ValueError):
             self.send_html(layout("Error", "<section><h1>Control service returned invalid data</h1><p>Reload the page and try again.</p></section>"), 502)
@@ -301,6 +311,25 @@ class Handler(BaseHTTPRequestHandler):
             domain_form = f"""<section><h2>1. Register a hostname</h2><p>The quickest free option is <a href="https://www.noip.com/personal" rel="noreferrer">No-IP</a>. Its free hostnames must be confirmed every 30 days.</p><h2>2. Point it to this server</h2><p>Create an A record whose value is <code>{h(status['public_ip'])}</code>.{ipv6_help}</p><h2>3. Check DNS and activate</h2><form method="post" action="/domain/check"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="domain">Hostname</label><input id="domain" name="domain" value="{h(value)}" placeholder="access.example.com" required><p><button>Check DNS</button></p></form>{activate_form}</section>"""
         self.send_html(layout("Domain", f"<h1>Domain setup</h1>{banner}{domain_form}", csrf=session["csrf"]))
 
+    def telegram(self, session: dict[str, Any]) -> None:
+        status = call("telegram_status")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        banner = ""
+        if "enabled" in query:
+            banner = '<section class="ok">Telegram proxy is ready. Open the link in Telegram or scan its QR code.</section>'
+        elif "rotated" in query:
+            banner = '<section class="ok">A new Telegram link is ready. The old link no longer works.</section>'
+        elif "disabled" in query:
+            banner = '<section class="ok">Telegram proxy is disabled. Its port is no longer listening.</section>'
+        if not status["enabled"]:
+            body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Optional MTProto profile</h2><p>This is for Telegram only. It is separate from your VLESS profiles and uses TCP port 8444, so it does not change REALITY, XHTTP, Nginx or port 443.</p><p class="muted">Enabling it downloads and builds the checksum-verified official Telegram MTProxy source. It uses a separate connection secret and random padding.</p><form method="post" action="/telegram/enable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Enable Telegram proxy</button></form></section>"""
+        else:
+            uri = status["uri"]
+            service_state = "Online" if status.get("active") else "Needs attention"
+            state_class = "ok" if status.get("active") else "bad"
+            body = f"""<h1>Telegram proxy</h1>{banner}<section><p class="{state_class}">{service_state} on TCP port {h(status['port'])}</p><p>Open this private link on a device with Telegram, or scan its QR code from Telegram's proxy settings.</p><pre>{h(uri)}</pre><p><a class="button" href="/telegram/qr">Show Telegram QR code</a></p><p class="muted">Anyone with this link can use this Telegram-only proxy. Rotate it if it is shared accidentally.</p><form class="inline" method="post" action="/telegram/rotate"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Rotate link</button></form> <form class="inline" method="post" action="/telegram/disable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button class="danger">Disable</button></form></section>"""
+        self.send_html(layout("Telegram", body, csrf=session["csrf"]))
+
     def logs(self, session: dict[str, Any]) -> None:
         text = call("logs")["text"]
         self.send_html(layout("Logs", f"<h1>Sanitized logs</h1><section><p class=\"muted\">Recent service events only. Addresses, device identifiers and import links are redacted.</p><pre>{h(text)}</pre></section>", csrf=session["csrf"]))
@@ -310,6 +339,19 @@ class Handler(BaseHTTPRequestHandler):
             if profile not in {"reality", "xhttp"}:
                 raise RPCError("Unknown profile.")
             raw = base64.b64decode(call("client_qr", {"name": name, "profile": profile})["png"], validate=True)
+        except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+            raise RPCError("Control service returned an invalid QR code.") from exc
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def telegram_qr(self) -> None:
+        try:
+            raw = base64.b64decode(call("telegram_qr")["png"], validate=True)
         except (KeyError, TypeError, ValueError, binascii.Error) as exc:
             raise RPCError("Control service returned an invalid QR code.") from exc
         self.send_response(HTTPStatus.OK)
