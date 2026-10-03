@@ -40,7 +40,10 @@ mkdir -p "${TEMP_DIR}/config/tls"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
   -keyout "${TEMP_DIR}/config/tls/default.key" -out "${TEMP_DIR}/config/tls/default.crt" >/dev/null 2>&1
 printf 'Generating REALITY test keys\n'
-reality_keys="$("${TEMP_DIR}/xray/xray" x25519)"
+if ! reality_keys="$("${TEMP_DIR}/xray/xray" x25519 2>&1)"; then
+  printf 'Xray key generation failed: %s\n' "${reality_keys}" >&2
+  exit 1
+fi
 reality_private_key="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${reality_keys}")"
 reality_public_key="$(awk -F': ' '/Public key/{print $2; exit}' <<<"${reality_keys}")"
 [[ -n "${reality_private_key}" && -n "${reality_public_key}" ]]
