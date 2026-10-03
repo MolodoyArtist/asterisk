@@ -91,7 +91,9 @@ finish() {
     "${NGINX_BIN}" -t || restore_failed=1
     "${SYSTEMCTL_BIN}" reload nginx || restore_failed=1
     "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web || restore_failed=1
-    "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy && "${SYSTEMCTL_BIN}" restart mtproxy || true
+    if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy; then
+      "${SYSTEMCTL_BIN}" restart mtproxy || true
+    fi
     if [[ "${restore_failed}" -eq 0 ]]; then
       ROLLBACK_READY=0
     else
