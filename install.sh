@@ -264,9 +264,7 @@ systemctl enable --now xray vpnctl-agent vpnctl-web vpnctl-health.timer
 
 log "Hardening SSH when a key is available"
 SSH_KEY_READY=0
-for ssh_key_file in /root/.ssh/authorized_keys; do
-  [[ -s "${ssh_key_file}" ]] && SSH_KEY_READY=1
-done
+[[ -s /root/.ssh/authorized_keys ]] && SSH_KEY_READY=1
 if [[ "${SSH_KEY_READY}" == 1 ]]; then
   install -d -m 0755 /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/99-vpnctl-key-only.conf <<'EOF'
