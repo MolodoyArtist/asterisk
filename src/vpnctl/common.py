@@ -59,6 +59,12 @@ def validate_domain(value: str) -> str:
     value = value.strip().lower().rstrip(".")
     if not DOMAIN_RE.fullmatch(value):
         raise ValidationError("Enter a valid fully-qualified domain name.")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise ValidationError("Enter a hostname, not an IP address.")
     return value
 
 
@@ -69,11 +75,13 @@ def validate_ip(value: str) -> str:
         raise ValidationError("Enter a valid public IP address.") from exc
 
 
-def atomic_write(path: Path, data: str, mode: int = 0o600) -> None:
+def atomic_write(path: Path, data: str, mode: int = 0o600, owner: tuple[int, int] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
         os.fchmod(fd, mode)
+        if owner is not None:
+            os.fchown(fd, owner[0], owner[1])
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(data)
             handle.flush()
@@ -92,8 +100,8 @@ def read_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def write_json(path: Path, value: dict[str, Any], mode: int = 0o600) -> None:
-    atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n", mode)
+def write_json(path: Path, value: dict[str, Any], mode: int = 0o600, owner: tuple[int, int] | None = None) -> None:
+    atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n", mode, owner)
 
 
 def load_state() -> dict[str, Any]:
@@ -112,8 +120,13 @@ def validate_state(state: dict[str, Any]) -> None:
         public_ipv6 = validate_ip(str(state["public_ipv6"]))
         if ":" not in public_ipv6:
             raise ValidationError("The optional public IPv6 address is invalid.")
-    if state.get("domain"):
-        validate_domain(str(state["domain"]))
+    if not isinstance(state.get("ip_mode"), bool):
+        raise ValidationError("The IP mode flag is invalid.")
+    domain = state.get("domain")
+    if domain and validate_domain(str(domain)) != domain:
+        raise ValidationError("The domain name must use its canonical form.")
+    if not state["ip_mode"] and not domain:
+        raise ValidationError("At least one public TLS endpoint must remain enabled.")
     path = str(state.get("xhttp_path", ""))
     if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", path):
         raise ValidationError("The transport path is invalid.")
@@ -130,6 +143,8 @@ def validate_state(state: dict[str, Any]) -> None:
             identifier = str(uuid.UUID(str(client.get("id", ""))))
         except ValueError as exc:
             raise ValidationError("A client identifier is invalid.") from exc
+        if not isinstance(client.get("enabled", True), bool):
+            raise ValidationError("A client enabled flag is invalid.")
         if name.casefold() in names or identifier in identifiers:
             raise ValidationError("Client names and identifiers must be unique.")
         names.add(name.casefold())
@@ -188,7 +203,11 @@ def verify_session(token: str, secret: str) -> dict[str, Any] | None:
         if not hmac.compare_digest(signature, expected):
             return None
         payload = json.loads(b64url_decode(body))
-        if int(payload["exp"]) < int(time.time()):
+        if not isinstance(payload, dict):
+            return None
+        if not isinstance(payload.get("user"), str) or not isinstance(payload.get("csrf"), str):
+            return None
+        if int(payload["exp"]) <= int(time.time()):
             return None
         return payload
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):

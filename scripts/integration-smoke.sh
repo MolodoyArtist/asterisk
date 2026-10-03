@@ -32,35 +32,46 @@ for cert_dir in "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"; do
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=example' \
     -keyout "${cert_dir}/privkey.pem" -out "${cert_dir}/fullchain.pem" >/dev/null 2>&1
 done
+mkdir -p "${TEMP_DIR}/config/tls"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
+  -keyout "${TEMP_DIR}/config/tls/default.key" -out "${TEMP_DIR}/config/tls/default.crt" >/dev/null 2>&1
 
 VPNCTL_CONFIG_DIR="${TEMP_DIR}/config" \
 VPNCTL_NGINX_SITE="${TEMP_DIR}/vpnctl.nginx" \
+VPNCTL_SMOKE_DIR="${TEMP_DIR}" \
 PYTHONPATH="${ROOT}/src" python3 - <<'PY'
+import os
 from pathlib import Path
-from vpnctl.common import NGINX_SITE, XRAY_CONFIG, render_nginx, render_xray
+from vpnctl.common import XRAY_CONFIG, render_nginx, render_xray
 
-state = {
+base = {
     "public_ip": "192.0.2.10",
     "public_ipv6": "2001:db8::10",
-    "ip_mode": True,
-    "domain": "access.example.com",
     "xhttp_path": "A_random_path_with_enough_entropy",
     "clients": [{"name": "smoke", "id": "00000000-0000-4000-8000-000000000001", "enabled": True}],
 }
+states = {
+    "ip": dict(base, ip_mode=True, domain=None),
+    "dual": dict(base, ip_mode=True, domain="access.example.com"),
+    "domain": dict(base, ip_mode=False, domain="access.example.com"),
+}
+root = Path(os.environ["VPNCTL_SMOKE_DIR"])
 XRAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-XRAY_CONFIG.write_text(render_xray(state))
-NGINX_SITE.write_text(render_nginx(state))
+for name, state in states.items():
+    (root / f"xray-{name}.json").write_text(render_xray(state))
+    (root / f"nginx-{name}.conf").write_text(render_nginx(state))
 PY
 
-XRAY_LOCATION_ASSET="${TEMP_DIR}/xray" "${TEMP_DIR}/xray/xray" run -test -config "${TEMP_DIR}/config/xray.json"
-
-cat >"${TEMP_DIR}/nginx.conf" <<EOF
-pid ${TEMP_DIR}/nginx.pid;
+for mode in ip dual domain; do
+  XRAY_LOCATION_ASSET="${TEMP_DIR}/xray" "${TEMP_DIR}/xray/xray" run -test -config "${TEMP_DIR}/xray-${mode}.json"
+  cat >"${TEMP_DIR}/nginx-${mode}-root.conf" <<EOF
+pid ${TEMP_DIR}/nginx-${mode}.pid;
 error_log stderr;
 events { worker_connections 4096; }
 http {
     include /etc/nginx/mime.types;
-    include ${TEMP_DIR}/vpnctl.nginx;
+    include ${TEMP_DIR}/nginx-${mode}.conf;
 }
 EOF
-nginx -t -c "${TEMP_DIR}/nginx.conf"
+  nginx -t -c "${TEMP_DIR}/nginx-${mode}-root.conf"
+done

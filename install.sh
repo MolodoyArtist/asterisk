@@ -18,7 +18,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 source /etc/os-release
 [[ "${ID:-}" == ubuntu ]] || die "This release supports Ubuntu 22.04 and 24.04 only."
 case "${VERSION_ID:-}" in 22.04|24.04) ;; *) die "This release supports Ubuntu 22.04 and 24.04 only." ;; esac
-[[ ! -e /var/lib/vpnctl/state.json ]] || die "vpnctl is already installed."
 
 exec 9>/run/vpnctl-install.lock
 flock -n 9 || die "Another installation is running."
@@ -37,6 +36,13 @@ if [[ ! -f "${SOURCE_DIR}/src/vpnctl/common.py" ]]; then
   tar -xzf "${TEMP_DIR}/source.tar.gz" -C "${TEMP_DIR}/source" --strip-components=1
   SOURCE_DIR="${TEMP_DIR}/source"
 fi
+
+if [[ -e /var/lib/vpnctl/state.json ]]; then
+  log "Existing installation detected; switching to safe update mode"
+  VPNCTL_LOCK_HELD=1 bash "${SOURCE_DIR}/scripts/update.sh"
+  exit
+fi
+[[ ! -e "${RESULT_FILE}" ]] || die "${RESULT_FILE} already exists. Move or delete it before installing."
 
 log "Installing operating-system packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -105,21 +111,37 @@ PY
 printf 'Detected public IPv4: %s\n' "${PUBLIC_IP}"
 PUBLIC_IPV6="$(curl -6 --fail --silent --show-error --max-time 5 --proto '=https' --tlsv1.2 https://api64.ipify.org 2>/dev/null || true)"
 if [[ -n "${PUBLIC_IPV6}" ]]; then
-  /usr/bin/python3 - "${PUBLIC_IPV6}" <<'PY'
+  if ! /usr/bin/python3 - "${PUBLIC_IPV6}" <<'PY'
 import ipaddress, sys
 address = ipaddress.ip_address(sys.argv[1])
 if address.version != 6 or not address.is_global:
-    raise SystemExit("Ignoring an invalid detected IPv6 address.")
+    raise SystemExit(1)
 PY
-  printf 'Detected public IPv6: %s\n' "${PUBLIC_IPV6}"
+  then
+    printf 'Ignoring an invalid detected IPv6 address.\n' >&2
+    PUBLIC_IPV6=
+  else
+    printf 'Detected public IPv6: %s\n' "${PUBLIC_IPV6}"
+  fi
 fi
 
 # Open validation and HTTPS before asking the CA to reach the machine. Preserve
-# the actual SSH destination port so enabling UFW cannot lock out this session.
-SSH_PORT="${SSH_CONNECTION:-}"
-SSH_PORT="${SSH_PORT##* }"
-[[ "${SSH_PORT}" =~ ^[0-9]+$ ]] || SSH_PORT=22
-ufw allow "${SSH_PORT}/tcp" comment 'SSH' >/dev/null
+# the active SSH destination port and configured sshd ports so enabling UFW
+# cannot lock out an SSH session or a console installation with a custom port.
+SSH_PORT_CANDIDATES=()
+ACTIVE_SSH_PORT="${SSH_CONNECTION:-}"
+ACTIVE_SSH_PORT="${ACTIVE_SSH_PORT##* }"
+[[ "${ACTIVE_SSH_PORT}" =~ ^[0-9]+$ ]] && SSH_PORT_CANDIDATES+=("${ACTIVE_SSH_PORT}")
+if [[ -x /usr/sbin/sshd ]]; then
+  while read -r configured_port; do
+    [[ "${configured_port}" =~ ^[0-9]+$ ]] && SSH_PORT_CANDIDATES+=("${configured_port}")
+  done < <(/usr/sbin/sshd -T 2>/dev/null | awk '$1 == "port" {print $2}' || true)
+fi
+((${#SSH_PORT_CANDIDATES[@]})) || SSH_PORT_CANDIDATES=(22)
+mapfile -t SSH_PORTS < <(printf '%s\n' "${SSH_PORT_CANDIDATES[@]}" | sort -nu)
+for ssh_port in "${SSH_PORTS[@]}"; do
+  ufw allow "${ssh_port}/tcp" comment 'SSH' >/dev/null
+done
 ufw allow 80/tcp comment 'HTTP certificate validation' >/dev/null
 ufw allow 443/tcp comment 'HTTPS' >/dev/null
 ufw --force enable >/dev/null

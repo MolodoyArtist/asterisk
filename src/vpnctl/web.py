@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import http.cookies
 import os
@@ -25,6 +26,15 @@ from .rpc import RPCError, call
 LOGIN_ATTEMPTS: dict[str, deque[float]] = defaultdict(deque)
 LOGIN_LOCK = threading.Lock()
 LOGIN_HASH_SLOTS = threading.BoundedSemaphore(2)
+MAX_FORM_BYTES = 16_384
+
+
+class InvalidRequestBody(ValueError):
+    pass
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
 
 
 CSS = """
@@ -48,18 +58,29 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def auth(self) -> dict[str, Any] | None:
-        auth = read_json(AUTH_FILE)
-        cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
-        token = cookie.get("__Host-session")
-        if not token:
+        try:
+            auth = read_json(AUTH_FILE)
+            cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+            token = cookie.get("__Host-session")
+            if not token:
+                return None
+            session = verify_session(token.value, auth["session_secret"])
+            if not session or session.get("user") != auth.get("username"):
+                return None
+            return session
+        except (OSError, KeyError, TypeError, ValueError, http.cookies.CookieError):
             return None
-        return verify_session(token.value, auth["session_secret"])
 
     def body(self) -> dict[str, str]:
         try:
-            length = min(int(self.headers.get("Content-Length", "0")), 16384)
-        except ValueError:
-            length = 0
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise InvalidRequestBody from exc
+        if length < 0:
+            raise InvalidRequestBody
+        if length > MAX_FORM_BYTES:
+            self.close_connection = True
+            raise RequestBodyTooLarge
         parsed = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"), keep_blank_values=True)
         return {key: values[-1] for key, values in parsed.items()}
 
@@ -125,7 +146,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(layout("Error", f"<section><h1>Operation failed</h1><p>{h(exc)}</p><p><a href=\"/\">Return</a></p></section>"), 400)
 
     def do_POST(self) -> None:
-        fields = self.body()
+        try:
+            fields = self.body()
+        except RequestBodyTooLarge:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except InvalidRequestBody:
+            self.send_error(HTTPStatus.BAD_REQUEST)
+            return
         if self.path == "/login":
             self.login(fields)
             return
@@ -170,7 +198,10 @@ class Handler(BaseHTTPRequestHandler):
                 target += "&domain=" + urllib.parse.quote(fields["domain"])
             self.redirect(target)
         except RPCError as exc:
-            self.send_html(layout("Error", f"<section><h1>Could not complete that step</h1><p>{h(exc)}</p><p><a href=\"{h(self.headers.get('Referer', '/'))}\">Go back</a></p></section>"), 400)
+            back = "/domain" if self.path.startswith("/domain/") else "/clients" if self.path.startswith("/clients/") else "/"
+            self.send_html(layout("Error", f"<section><h1>Could not complete that step</h1><p>{h(exc)}</p><p><a href=\"{back}\">Go back</a></p></section>"), 400)
+        except (KeyError, TypeError, ValueError):
+            self.send_html(layout("Error", "<section><h1>Control service returned invalid data</h1><p>Reload the page and try again.</p></section>"), 502)
 
     def login_page(self, error: str = "") -> None:
         message = f'<p class="bad">{h(error)}</p>' if error else ""
@@ -203,10 +234,13 @@ class Handler(BaseHTTPRequestHandler):
         if not LOGIN_HASH_SLOTS.acquire(blocking=False):
             self.login_page("Please wait before trying again.")
             return
-        auth = read_json(AUTH_FILE)
         try:
+            auth = read_json(AUTH_FILE)
             good_user = fields.get("username", "") == auth["username"]
             good_password = verify_password(fields.get("password", ""), auth["password"])
+        except (OSError, KeyError, TypeError, ValueError):
+            self.send_html(layout("Unavailable", "<section><h1>Temporarily unavailable</h1><p>Try again in a moment.</p></section>", False), 503)
+            return
         finally:
             LOGIN_HASH_SLOTS.release()
         if not (good_user and good_password):
@@ -287,7 +321,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_html(layout("Help", body))
 
     def qr(self, name: str) -> None:
-        raw = base64.b64decode(call("client_qr", {"name": name})["png"])
+        try:
+            raw = base64.b64decode(call("client_qr", {"name": name})["png"], validate=True)
+        except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+            raise RPCError("Control service returned an invalid QR code.") from exc
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(raw)))

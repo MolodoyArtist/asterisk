@@ -22,10 +22,14 @@ jobs:
           ruff check src tests
           bandit -q -r src
       - name: Check shell syntax
-        run: bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh
+        run: bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh scripts/update.sh scripts/update-smoke.sh
       - name: Install integration dependencies
-        run: sudo apt-get update && sudo apt-get install -y nginx ripgrep
+        run: sudo apt-get update && sudo apt-get install -y nginx ripgrep shellcheck
+      - name: Lint shell scripts
+        run: shellcheck install.sh scripts/*.sh
       - name: Scan repository
         run: bash scripts/check-repository.sh
       - name: Validate generated Nginx and Xray configurations
         run: sudo bash scripts/integration-smoke.sh
+      - name: Validate update and rollback
+        run: sudo bash scripts/update-smoke.sh

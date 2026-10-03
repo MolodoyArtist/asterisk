@@ -7,6 +7,7 @@ import grp
 import ipaddress
 import json
 import os
+import pwd
 import shutil
 import socket
 import socketserver
@@ -45,12 +46,12 @@ from .common import (
 SOCKET_PATH = Path(os.environ.get("VPNCTL_AGENT_SOCKET", "/run/vpnctl/agent.sock"))
 XRAY_BIN = os.environ.get("VPNCTL_XRAY_BIN", "/usr/local/bin/xray")
 CERTBOT_BIN = os.environ.get("VPNCTL_CERTBOT_BIN", "/snap/bin/certbot")
-SYSTEMCTL_BIN = "/usr/bin/systemctl"
-OPENSSL_BIN = "/usr/bin/openssl"
-NGINX_BIN = "/usr/sbin/nginx"
-SS_BIN = "/usr/bin/ss"
-JOURNALCTL_BIN = "/usr/bin/journalctl"
-QRENCODE_BIN = "/usr/bin/qrencode"
+SYSTEMCTL_BIN = os.environ.get("VPNCTL_SYSTEMCTL_BIN", "/usr/bin/systemctl")
+OPENSSL_BIN = os.environ.get("VPNCTL_OPENSSL_BIN", "/usr/bin/openssl")
+NGINX_BIN = os.environ.get("VPNCTL_NGINX_BIN", "/usr/sbin/nginx")
+SS_BIN = os.environ.get("VPNCTL_SS_BIN", "/usr/bin/ss")
+JOURNALCTL_BIN = os.environ.get("VPNCTL_JOURNALCTL_BIN", "/usr/bin/journalctl")
+QRENCODE_BIN = os.environ.get("VPNCTL_QRENCODE_BIN", "/usr/bin/qrencode")
 LOCK = threading.RLock()
 
 # Subprocess calls use fixed argument vectors for local system tools; shell mode is never used.
@@ -282,13 +283,16 @@ def action_client_qr(payload: dict[str, Any]) -> dict[str, Any]:
     client = next((item for item in state.get("clients", []) if item["name"] == name and item.get("enabled", True)), None)
     if not client:
         raise AgentError("Active client not found.")
-    result = subprocess.run(
-        [QRENCODE_BIN, "-t", "PNG", "-s", "6", "-m", "2", "-o", "-"],
-        input=client_uri(state, client).encode(),
-        capture_output=True,
-        timeout=15,
-        check=False,  # nosec B603
-    )
+    try:
+        result = subprocess.run(
+            [QRENCODE_BIN, "-t", "PNG", "-s", "6", "-m", "2", "-o", "-"],
+            input=client_uri(state, client).encode(),
+            capture_output=True,
+            timeout=15,
+            check=False,  # nosec B603
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgentError("QR code generation timed out.") from exc
     if result.returncode != 0:
         raise AgentError("QR code generation failed.")
     return {"png": base64.b64encode(result.stdout).decode("ascii")}
@@ -382,11 +386,11 @@ def action_reset_password(_: dict[str, Any]) -> dict[str, Any]:
         auth = read_json(AUTH_FILE)
         auth["password"] = hash_password(password)
         auth["session_secret"] = random_token(32)
-        write_json(AUTH_FILE, auth, 0o600)
         try:
-            shutil.chown(AUTH_FILE, user="vpnctl", group="vpnctl")
-        except LookupError:
-            pass
+            owner = (pwd.getpwnam("vpnctl").pw_uid, grp.getgrnam("vpnctl").gr_gid)
+        except KeyError as exc:
+            raise AgentError("The portal service account is missing.") from exc
+        write_json(AUTH_FILE, auth, 0o600, owner)
         return {"username": auth["username"], "password": password}
 
 
@@ -406,13 +410,20 @@ ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 
 def dispatch(request: dict[str, Any], peer_uid: int = 0) -> dict[str, Any]:
+    if not isinstance(request, dict):
+        raise AgentError("Invalid request.")
     action = str(request.get("action", ""))
     handler = ACTIONS.get(action)
     if not handler:
         raise AgentError("Unsupported operation.")
     if action == "reset_password" and peer_uid != 0:
         raise AgentError("This operation is available only through sudo vpnctl.")
-    return handler(request.get("payload") or {})
+    payload = request.get("payload", {})
+    if payload is None:
+        payload = {}
+    elif not isinstance(payload, dict):
+        raise AgentError("Invalid request payload.")
+    return handler(payload)
 
 
 class RequestHandler(socketserver.StreamRequestHandler):

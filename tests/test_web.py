@@ -6,11 +6,13 @@ import threading
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vpnctl import web
-from vpnctl.common import hash_password, random_token
+from vpnctl.common import hash_password, make_session, random_token
+from vpnctl.rpc import RPCError
 
 
 class WebTests(unittest.TestCase):
@@ -18,12 +20,14 @@ class WebTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tempdir = tempfile.TemporaryDirectory()
         auth_file = Path(cls.tempdir.name) / "auth.json"
+        cls.auth_file = auth_file
+        cls.session_secret = random_token(32)
         auth_file.write_text(
             json.dumps(
                 {
                     "username": "member-test",
                     "password": hash_password("correct horse battery staple"),
-                    "session_secret": random_token(32),
+                    "session_secret": cls.session_secret,
                 }
             )
         )
@@ -51,6 +55,10 @@ class WebTests(unittest.TestCase):
         headers_out = dict(response.getheaders())
         connection.close()
         return response.status, headers_out, data
+
+    def authenticated_headers(self):
+        token, csrf = make_session("member-test", self.session_secret)
+        return {"Cookie": f"__Host-session={token}"}, csrf
 
     def test_public_root_is_only_generic_login(self):
         status, headers, body = self.request("GET", "/")
@@ -83,6 +91,84 @@ class WebTests(unittest.TestCase):
         self.assertIn("Secure", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
+
+    def test_add_device_redirects_after_success(self):
+        headers, csrf = self.authenticated_headers()
+        body = urllib.parse.urlencode({"name": "tablet", "csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        with mock.patch("vpnctl.web.call", return_value={"name": "tablet", "uri": "vless://test"}) as call:
+            status, response_headers, _ = self.request("POST", "/clients/add", body, headers)
+        self.assertEqual(status, 303)
+        self.assertEqual(response_headers["Location"], "/clients")
+        call.assert_called_once_with("client_add", {"name": "tablet"})
+
+    def test_mutation_requires_authentication_and_csrf(self):
+        body = urllib.parse.urlencode({"name": "tablet"})
+        base_headers = {"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))}
+        status, response_headers, _ = self.request("POST", "/clients/add", body, base_headers)
+        self.assertEqual(status, 303)
+        self.assertEqual(response_headers["Location"], "/")
+
+        headers, _ = self.authenticated_headers()
+        headers.update(base_headers)
+        with mock.patch("vpnctl.web.call") as call:
+            status, _, response_body = self.request("POST", "/clients/add", body, headers)
+        self.assertEqual(status, 403)
+        self.assertIn("Request expired", response_body)
+        call.assert_not_called()
+
+    def test_agent_failure_returns_page_instead_of_dropping_connection(self):
+        headers, csrf = self.authenticated_headers()
+        body = urllib.parse.urlencode({"name": "tablet", "csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        with mock.patch("vpnctl.web.call", side_effect=RPCError("temporarily unavailable")):
+            status, _, response_body = self.request("POST", "/clients/add", body, headers)
+        self.assertEqual(status, 400)
+        self.assertIn("temporarily unavailable", response_body)
+
+    def test_malformed_agent_result_returns_502_instead_of_dropping_connection(self):
+        headers, csrf = self.authenticated_headers()
+        body = urllib.parse.urlencode({"csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        with mock.patch("vpnctl.web.call", return_value={}):
+            status, _, response_body = self.request("POST", "/domain/disable-ip", body, headers)
+        self.assertEqual(status, 502)
+        self.assertIn("invalid data", response_body)
+
+    def test_invalid_and_oversized_content_lengths_are_rejected(self):
+        for length, expected in (("invalid", 400), ("-1", 400), (str(web.MAX_FORM_BYTES + 1), 413)):
+            status, _, _ = self.request("POST", "/login", headers={"Content-Length": length})
+            self.assertEqual(status, expected)
+
+    def test_invalid_qr_payload_returns_error_page(self):
+        headers, _ = self.authenticated_headers()
+        with mock.patch("vpnctl.web.call", return_value={"png": "not base64!"}):
+            status, _, response_body = self.request("GET", "/qr?name=phone", headers=headers)
+        self.assertEqual(status, 400)
+        self.assertIn("invalid QR code", response_body)
+
+    def test_unreadable_auth_file_returns_503_without_leaking_hash_slot(self):
+        original = web.AUTH_FILE
+        web.AUTH_FILE = Path(self.tempdir.name) / "missing.json"
+        try:
+            body = urllib.parse.urlencode({"username": "member-test", "password": "correct horse battery staple"})
+            status, _, response_body = self.request(
+                "POST",
+                "/login",
+                body,
+                {"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))},
+            )
+            self.assertEqual(status, 503)
+            self.assertIn("Temporarily unavailable", response_body)
+            first = web.LOGIN_HASH_SLOTS.acquire(blocking=False)
+            second = web.LOGIN_HASH_SLOTS.acquire(blocking=False)
+            self.assertTrue(first and second)
+            if second:
+                web.LOGIN_HASH_SLOTS.release()
+            if first:
+                web.LOGIN_HASH_SLOTS.release()
+        finally:
+            web.AUTH_FILE = original
 
 
 if __name__ == "__main__":
