@@ -4,6 +4,8 @@ set -Eeuo pipefail
 [[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/xray.sh
+source "${ROOT}/scripts/xray.sh"
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-smoke.XXXXXX)"
 IP_CERT_DIR=/etc/letsencrypt/live/192.0.2.10
 DOMAIN_CERT_DIR=/etc/letsencrypt/live/access.example.com
@@ -18,13 +20,10 @@ trap cleanup EXIT
   exit 1
 }
 
-version=v26.3.27
-archive="https://github.com/XTLS/Xray-core/releases/download/${version}/Xray-linux-64.zip"
+archive="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
 curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}" -o "${TEMP_DIR}/xray.zip"
-curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}.dgst" -o "${TEMP_DIR}/xray.dgst"
-expected="$(awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9a-fA-F]{64}$/){print tolower($i); exit}}' "${TEMP_DIR}/xray.dgst")"
+expected="$(xray_sha256 64)"
 actual="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
-[[ -n "${expected}" ]] || { echo 'Could not parse the Xray SHA-256 digest.' >&2; exit 1; }
 [[ "${actual}" == "${expected}" ]] || { echo 'Xray archive checksum mismatch.' >&2; exit 1; }
 unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
 
