@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+trap 'status=$?; printf "integration smoke failed at line %s (exit %s)\n" "$LINENO" "$status" >&2; exit "$status"' ERR
+
 [[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,11 +22,12 @@ trap cleanup EXIT
 
 version=v26.3.27
 archive="https://github.com/XTLS/Xray-core/releases/download/${version}/Xray-linux-64.zip"
-curl -fsSL "${archive}" -o "${TEMP_DIR}/xray.zip"
-curl -fsSL "${archive}.dgst" -o "${TEMP_DIR}/xray.dgst"
+curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}" -o "${TEMP_DIR}/xray.zip"
+curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}.dgst" -o "${TEMP_DIR}/xray.dgst"
 expected="$(awk 'BEGIN{IGNORECASE=1} /SHA2-256/{for(i=1;i<=NF;i++) if($i ~ /^[0-9a-fA-F]{64}$/){print tolower($i); exit}}' "${TEMP_DIR}/xray.dgst")"
 actual="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
-[[ -n "${expected}" && "${actual}" == "${expected}" ]]
+[[ -n "${expected}" ]] || { echo 'Could not parse the Xray SHA-256 digest.' >&2; exit 1; }
+[[ "${actual}" == "${expected}" ]] || { echo 'Xray archive checksum mismatch.' >&2; exit 1; }
 unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
 
 mkdir -p "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"
@@ -72,6 +75,7 @@ for name, state in states.items():
 PY
 
 for mode in ip domain; do
+  printf 'Validating Xray %s configuration\n' "${mode}"
   XRAY_LOCATION_ASSET="${TEMP_DIR}/xray" "${TEMP_DIR}/xray/xray" run -test -config "${TEMP_DIR}/xray-${mode}.json"
   cat >"${TEMP_DIR}/nginx-${mode}-root.conf" <<EOF
 pid ${TEMP_DIR}/nginx-${mode}.pid;
@@ -82,5 +86,6 @@ http {
     include ${TEMP_DIR}/nginx-${mode}.conf;
 }
 EOF
+  printf 'Validating Nginx %s configuration\n' "${mode}"
   nginx -t -c "${TEMP_DIR}/nginx-${mode}-root.conf"
 done
