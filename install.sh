@@ -234,7 +234,7 @@ USERNAME="$(/usr/bin/python3 -c 'import json; print(json.load(open("/root/vpnctl
 PASSWORD="$(/usr/bin/python3 -c 'import json; print(json.load(open("/root/vpnctl-install.json"))["password"])')"
 CLIENT_URI="$(/usr/bin/python3 -c 'import json; print(json.load(open("/root/vpnctl-install.json"))["client_uri"])')"
 
-printf '\nInstallation complete.\n\nPanel: %s\nLogin: %s\nPassword: %s\n\nHiddify import link:\n%s\n\n' \
+printf '\nInstallation complete.\n\nPanel: %s\nLogin: %s\nPassword: %s\n\nv2RayTun import link:\n%s\n\n' \
   "${PANEL_URL}" "${USERNAME}" "${PASSWORD}" "${CLIENT_URI}"
 printf '%s' "${CLIENT_URI}" | qrencode -t ANSIUTF8
 printf '\nA root-only copy is stored in %s. Delete it after saving the credentials.\n' "${RESULT_FILE}"
