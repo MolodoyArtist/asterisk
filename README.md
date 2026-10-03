@@ -100,7 +100,8 @@ certificate issuance.
    FreeDNS, deSEC, and Cloudflare DNS.
 3. Create an A record using the value displayed by the portal.
 4. Wait for DNS propagation and select **Check DNS**.
-5. Issue the certificate and activate the domain.
+5. Issue the certificate and activate the domain. The browser then moves to
+   `https://YOUR_DOMAIN:8443/`; sign in there again.
 6. On **Devices**, import and test the additional XHTTP + TLS link.
 
 The recommended REALITY profile remains available on TCP/443. The domain profile
@@ -164,8 +165,8 @@ sudo rm /root/vpnctl-install.json
 
 - Xray REALITY listens directly on TCP/443; the XHTTP inbound is loopback-only
   and exists only after a domain is added. SSH, HTTP, TCP/443 and TCP/8443 are
-  externally reachable. TCP/8444 is opened only after enabling the optional
-  Telegram profile; MTProxy statistics remain loopback-only.
+  externally reachable. The MTProxy listener on TCP/8444 starts only after
+  enabling the optional Telegram profile; MTProxy statistics remain loopback-only.
 - HTTP serves ACME validation only; the portal never accepts credentials over HTTP.
 - Unknown Host/SNI values and an invalid XHTTP path receive a normal 404.
 - Access logs for the portal and XHTTP are disabled.

@@ -198,8 +198,10 @@ class Handler(BaseHTTPRequestHandler):
                 "/telegram/rotate": ("telegram_rotate", {}, "/telegram?rotated=1"),
             }
             action, payload, target = routes[self.path]
-            call(action, payload)
-            if fields.get("domain"):
+            result = call(action, payload)
+            if self.path == "/domain/add":
+                target = f"https://{urllib.parse.quote(str(result['domain']), safe='.-')}:{8443}/domain?added=1"
+            if fields.get("domain") and target.startswith("/"):
                 target += "&domain=" + urllib.parse.quote(fields["domain"])
             self.redirect(target)
         except RPCError as exc:
@@ -307,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
             ipv6_help = f" If you use IPv6, create an AAAA record with <code>{h(status['public_ipv6'])}</code>." if status.get("public_ipv6") else " Do not create an AAAA record because this VPS has no detected public IPv6."
             activate_form = ""
             if "checked" in query and value:
-                activate_form = f"""<form method="post" action="/domain/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><input type="hidden" name="domain" value="{h(value)}"><button>Issue certificate and activate</button></form>"""
+                activate_form = f"""<p class="muted">After activation, sign in again at <code>https://{h(value)}:8443/</code>.</p><form method="post" action="/domain/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><input type="hidden" name="domain" value="{h(value)}"><button>Issue certificate and activate</button></form>"""
             domain_form = f"""<section><h2>1. Register a hostname</h2><p>The quickest free option is <a href="https://www.noip.com/personal" rel="noreferrer">No-IP</a>. Its free hostnames must be confirmed every 30 days.</p><h2>2. Point it to this server</h2><p>Create an A record whose value is <code>{h(status['public_ip'])}</code>.{ipv6_help}</p><h2>3. Check DNS and activate</h2><form method="post" action="/domain/check"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="domain">Hostname</label><input id="domain" name="domain" value="{h(value)}" placeholder="access.example.com" required><p><button>Check DNS</button></p></form>{activate_form}</section>"""
         self.send_html(layout("Domain", f"<h1>Domain setup</h1>{banner}{domain_form}", csrf=session["csrf"]))
 
@@ -322,7 +324,10 @@ class Handler(BaseHTTPRequestHandler):
         elif "disabled" in query:
             banner = '<section class="ok">Telegram proxy is disabled. Its port is no longer listening.</section>'
         if not status["enabled"]:
-            body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Optional MTProto profile</h2><p>This is for Telegram only. It is separate from your VLESS profiles and uses TCP port 8444, so it does not change REALITY, XHTTP, Nginx or port 443.</p><p class="muted">Enabling it downloads and builds the checksum-verified official Telegram MTProxy source. It uses a separate connection secret and random padding.</p><form method="post" action="/telegram/enable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Enable Telegram proxy</button></form></section>"""
+            if not status.get("available", True):
+                body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Unavailable on this VPS</h2><p>{h(status.get('unavailable_reason', 'This optional profile is unavailable.'))}</p></section>"""
+            else:
+                body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Optional MTProto profile</h2><p>This is for Telegram only. It is separate from your VLESS profiles and uses TCP port 8444, so it does not change REALITY, XHTTP, Nginx or port 443.</p><p class="muted">The first activation downloads and builds the checksum-verified official Telegram MTProxy source. It can take several minutes; keep this page open. A separate connection secret and random padding are used.</p><form method="post" action="/telegram/enable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Enable Telegram proxy</button></form></section>"""
         else:
             uri = status["uri"]
             service_state = "Online" if status.get("active") else "Needs attention"

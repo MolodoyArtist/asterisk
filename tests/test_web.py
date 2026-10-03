@@ -166,7 +166,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(body, "test-png")
         call.assert_called_once_with("client_qr", {"name": "phone", "profile": "xhttp"})
 
-    def test_domain_workflow_stays_on_the_current_origin(self):
+    def test_domain_workflow_moves_to_domain_after_activation(self):
         headers, csrf = self.authenticated_headers()
         status_result = {
             "domain": None,
@@ -185,6 +185,11 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertTrue(response_headers["Location"].startswith("/domain?"))
         self.assertFalse(response_headers["Location"].startswith("https://"))
+
+        with mock.patch("vpnctl.web.call", return_value={"domain": "access.example.com"}):
+            status, response_headers, _ = self.request("POST", "/domain/add", body, headers)
+        self.assertEqual(status, 303)
+        self.assertEqual(response_headers["Location"], "https://access.example.com:8443/domain?added=1")
 
     def test_telegram_workflow_requires_csrf_and_stays_local(self):
         headers, csrf = self.authenticated_headers()

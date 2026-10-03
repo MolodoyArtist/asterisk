@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare optional Telegram MTProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+TimeoutStartSec=15min
+ExecStart=/usr/local/lib/vpnctl/mtproxy provision
+PrivateTmp=true
+ProtectHome=true

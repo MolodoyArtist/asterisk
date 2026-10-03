@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove optional Telegram MTProxy access
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/lib/vpnctl/mtproxy cleanup
+PrivateTmp=true
+ProtectHome=true

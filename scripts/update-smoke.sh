@@ -71,6 +71,7 @@ run_update() {
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
   VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
   VPNCTL_HELPER_DIR="${case_dir}/helpers" \
+  VPNCTL_UFW_APP_DIR="${case_dir}/ufw-applications" \
   VPNCTL_PYTHON_BIN=/usr/bin/python3 \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
@@ -89,6 +90,8 @@ grep -q '"schema": 2' "${success_dir}/state/state.json"
 grep -q '"layout": "legacy-xhttp-primary"' "${success_dir}/state/state.json"
 grep -q '00000000-0000-4000-8000-000000000001' "${success_dir}/state/state.json"
 grep -q '^new geoip$' "${success_dir}/assets/geoip.dat"
+[[ -f "${success_dir}/systemd/mtproxy.service" ]]
+[[ -x "${success_dir}/helpers/mtproxy" ]]
 
 rollback_dir="${TEMP_ROOT}/rollback"
 prepare_case "${rollback_dir}"
@@ -106,6 +109,8 @@ grep -q '^old xray configuration$' "${rollback_dir}/config/xray.json"
 grep -q '^old nginx configuration$' "${rollback_dir}/nginx/vpnctl"
 grep -q '^old geoip$' "${rollback_dir}/assets/geoip.dat"
 [[ "$(sha256sum "${rollback_dir}/state/state.json" | awk '{print $1}')" == "${state_before}" ]]
+[[ ! -e "${rollback_dir}/systemd/mtproxy.service" ]]
+[[ ! -e "${rollback_dir}/helpers/mtproxy" ]]
 
 recovery_dir="${TEMP_ROOT}/existing-recovery"
 prepare_case "${recovery_dir}"

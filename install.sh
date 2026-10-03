@@ -105,6 +105,7 @@ install -m 0644 "${SOURCE_DIR}"/systemd/*.service "${SOURCE_DIR}"/systemd/*.time
 install -d -o root -g root -m 0755 /usr/local/lib/vpnctl
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy.sh" /usr/local/lib/vpnctl/mtproxy
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy-run" /usr/local/lib/vpnctl/mtproxy-run
+install -m 0644 "${SOURCE_DIR}/ufw/vpnctl-mtproxy" /etc/ufw/applications.d/vpnctl-mtproxy
 cat >/usr/local/bin/vpnctl <<'EOF'
 #!/usr/bin/env bash
 export PYTHONPATH=/opt/vpnctl/src

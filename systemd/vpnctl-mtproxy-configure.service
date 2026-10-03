@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply Telegram MTProxy credentials
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/lib/vpnctl/mtproxy configure
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/mtproxy
+ReadOnlyPaths=/var/lib/vpnctl

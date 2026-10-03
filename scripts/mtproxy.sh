@@ -7,6 +7,7 @@ MTPROXY_COMMIT="f36d8af769ffaeac36978d38c2c0f6d1104c2137"
 MTPROXY_SHA256="919795c416b870670841a21d1930ad97a24c7b84b9eb8c6f9e3de32f2fdf4655"
 MTPROXY_DIR="${VPNCTL_MTPROXY_DIR:-/opt/MTProxy}"
 MTPROXY_ETC="${VPNCTL_MTPROXY_ETC:-/etc/mtproxy}"
+STATE_FILE="${VPNCTL_STATE_FILE:-/var/lib/vpnctl/state.json}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [[ "${EUID}" -eq 0 ]] || die "Run as root."
@@ -35,7 +36,10 @@ prepare() {
   install -d -o mtproxy -g mtproxy -m 0755 "${source}"
   tar -C "${source}" --strip-components=1 -xzf "${archive}"
   chown -R mtproxy:mtproxy "${source}"
-  runuser -u mtproxy -- make -C "${source}" -j"$(nproc)"
+  local jobs
+  jobs="$(nproc)"
+  (( jobs > 2 )) && jobs=2
+  runuser -u mtproxy -- make -C "${source}" -j"${jobs}"
   [[ -x "${source}/objs/bin/mtproto-proxy" ]] || die "MTProxy build did not produce its binary."
   printf '%s\n' "${MTPROXY_COMMIT}" >"${source}/.vpnctl-commit"
   chown -R root:root "${source}"
@@ -65,8 +69,50 @@ refresh() {
   install -o root -g mtproxy -m 0640 "${config}" "${MTPROXY_ETC}/proxy-multi.conf"
 }
 
+configure() {
+  [[ -d "${MTPROXY_ETC}" ]] || die "MTProxy is not prepared."
+  /usr/bin/python3 - "${STATE_FILE}" "${MTPROXY_ETC}/vpnctl.env" <<'PY'
+import json, os, re, sys, tempfile
+state_path, env_path = sys.argv[1:]
+with open(state_path, encoding="utf-8") as handle:
+    state = json.load(handle)
+telegram = state.get("telegram", {})
+port, secret = telegram.get("port"), telegram.get("secret")
+if not telegram.get("enabled") or not isinstance(port, int) or not 1024 <= port <= 65535 or not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{32}", secret):
+    raise SystemExit("Telegram proxy state is invalid.")
+fd, temporary = tempfile.mkstemp(prefix=".vpnctl.env.", dir=os.path.dirname(env_path))
+try:
+    os.fchmod(fd, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(f"MTPROXY_PORT={port}\nMTPROXY_SECRET={secret}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, env_path)
+except BaseException:
+    try: os.unlink(temporary)
+    except FileNotFoundError: pass
+    raise
+PY
+  chown root:mtproxy "${MTPROXY_ETC}/vpnctl.env"
+}
+
+provision() {
+  prepare
+  refresh
+  configure
+  ufw allow vpnctl-mtproxy >/dev/null
+}
+
+cleanup() {
+  ufw --force delete allow vpnctl-mtproxy >/dev/null 2>&1 || true
+  rm -f -- "${MTPROXY_ETC}/vpnctl.env"
+}
+
 case "${1:-}" in
   prepare) prepare ;;
   refresh) refresh ;;
-  *) die "Usage: $0 {prepare|refresh}" ;;
+  configure) configure ;;
+  provision) provision ;;
+  cleanup) cleanup ;;
+  *) die "Usage: $0 {prepare|refresh|configure|provision|cleanup}" ;;
 esac

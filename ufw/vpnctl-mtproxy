@@ -1,0 +1,4 @@
+[vpnctl-mtproxy]
+title=Optional Telegram MTProxy
+description=Telegram-only MTProto proxy managed by vpnctl
+ports=8444/tcp

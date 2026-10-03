@@ -129,11 +129,13 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(config.count("listen 8443 ssl http2 default_server"), 1)
 
     def test_redaction(self):
-        value = "from 192.0.2.10 id 00000000-0000-4000-8000-000000000001 vless://secret@example.com"
+        value = "from 192.0.2.10 id 00000000-0000-4000-8000-000000000001 vless://secret@example.com tg://proxy?secret=secret MTPROXY_SECRET=0123456789abcdef0123456789abcdef"
         cleaned = redact_log(value)
         self.assertNotIn("192.0.2.10", cleaned)
         self.assertNotIn("00000000", cleaned)
         self.assertNotIn("vless://", cleaned)
+        self.assertNotIn("tg://", cleaned)
+        self.assertNotIn("0123456789abcdef", cleaned)
 
     def test_domain_must_point_only_to_this_server(self):
         state = dict(STATE, public_ipv6="2001:db8::10")
@@ -265,13 +267,15 @@ class CommonTests(unittest.TestCase):
         with (
             mock.patch("vpnctl.agent.load_state", return_value=original),
             mock.patch("vpnctl.agent.run", side_effect=fake_run),
-            mock.patch("vpnctl.agent._write_mtproxy_env"),
+            mock.patch("vpnctl.agent._port_is_busy", return_value=False),
+            mock.patch("vpnctl.agent._mtproxy_unit") as unit,
             mock.patch("vpnctl.agent.save_state") as save_state,
+            mock.patch("vpnctl.agent.os.uname", return_value=mock.Mock(machine="x86_64")),
         ):
             result = action_telegram_enable({})
         self.assertTrue(result["enabled"])
         self.assertIn("port=8444", result["uri"])
-        self.assertTrue(any(command[-1] == "prepare" for command in calls))
+        unit.assert_called_once_with("vpnctl-mtproxy-provision.service", 900)
         self.assertFalse(any("xray" in command or "nginx" in command for command in calls))
         self.assertTrue(save_state.called)
 
@@ -279,15 +283,16 @@ class CommonTests(unittest.TestCase):
         original = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})
         with (
             mock.patch("vpnctl.agent.load_state", return_value=original),
-            mock.patch("vpnctl.agent._write_mtproxy_env") as write_env,
+            mock.patch("vpnctl.agent._mtproxy_unit") as unit,
             mock.patch("vpnctl.agent.run", side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]),
+            mock.patch("vpnctl.agent.save_state"),
             self.assertRaisesRegex(AgentError, "previous secret was restored"),
         ):
             action_telegram_rotate({})
-        self.assertEqual(write_env.call_count, 2)
-        self.assertEqual(write_env.call_args_list[-1].args[0], original)
+        self.assertEqual(unit.call_count, 2)
+        self.assertEqual(unit.call_args_list[-1].args, ("vpnctl-mtproxy-configure.service", 60))
 
-    def test_telegram_enable_stops_service_when_state_cannot_be_saved(self):
+    def test_telegram_enable_rolls_back_state_and_cleanup_when_provision_fails(self):
         original = dict(STATE, schema=2)
         commands = []
 
@@ -298,14 +303,15 @@ class CommonTests(unittest.TestCase):
         with (
             mock.patch("vpnctl.agent.load_state", return_value=original),
             mock.patch("vpnctl.agent.run", side_effect=fake_run),
-            mock.patch("vpnctl.agent._write_mtproxy_env"),
-            mock.patch("vpnctl.agent.MTPROXY_ENV") as env_file,
-            mock.patch("vpnctl.agent.save_state", side_effect=OSError("disk full")),
-            self.assertRaisesRegex(AgentError, "service was stopped"),
+            mock.patch("vpnctl.agent._port_is_busy", return_value=False),
+            mock.patch("vpnctl.agent._mtproxy_unit", side_effect=[AgentError("failed")]),
+            mock.patch("vpnctl.agent.save_state") as save_state,
+            mock.patch("vpnctl.agent.os.uname", return_value=mock.Mock(machine="x86_64")),
+            self.assertRaisesRegex(AgentError, "failed"),
         ):
             action_telegram_enable({})
-        env_file.unlink.assert_called_once_with(missing_ok=True)
-        self.assertTrue(any(command[1:3] == ["disable", "--now"] for command in commands))
+        self.assertEqual(save_state.call_args_list[-1].args[0], original)
+        self.assertTrue(any(command[-1] == "vpnctl-mtproxy-cleanup.service" for command in commands))
 
     def test_xray_restart_does_not_restart_control_plane(self):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "vpnctl-agent.service").read_text()
@@ -317,6 +323,8 @@ class CommonTests(unittest.TestCase):
         mtproxy_unit = (Path(__file__).resolve().parents[1] / "systemd" / "mtproxy.service").read_text()
         self.assertNotIn("443", mtproxy_unit)
         self.assertIn("ProtectProc=invisible", mtproxy_unit)
+        refresh_unit = (Path(__file__).resolve().parents[1] / "systemd" / "mtproxy-refresh.service").read_text()
+        self.assertIn("try-restart mtproxy.service", refresh_unit)
 
 
 if __name__ == "__main__":
