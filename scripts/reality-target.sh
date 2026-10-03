@@ -26,6 +26,7 @@ reality_target_asn() {
   reality_ipv4_asn "${address}"
 }
 
+# shellcheck disable=SC2034 # This sourced function intentionally sets result globals for its caller.
 reality_select_target() {
   local public_ip=$1 candidates=$2 xray_bin=$3 candidate candidate_asn server_asn fallback fallback_asn
   server_asn="$(reality_ipv4_asn "${public_ip}" || true)"
