@@ -45,7 +45,7 @@ if ! reality_keys="$("${TEMP_DIR}/xray/xray" x25519 2>&1)"; then
   exit 1
 fi
 reality_private_key="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${reality_keys}")"
-reality_public_key="$(awk -F': ' '/Public key/{print $2; exit}' <<<"${reality_keys}")"
+reality_public_key="$(awk -F': ' '/^(Public key|Password):/{print $2; exit}' <<<"${reality_keys}")"
 [[ -n "${reality_private_key}" && -n "${reality_public_key}" ]]
 
 printf 'Rendering test configurations\n'
