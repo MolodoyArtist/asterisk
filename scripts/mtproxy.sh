@@ -58,7 +58,9 @@ refresh() {
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "${upstream_key}" https://core.telegram.org/getProxySecret
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "${config}" https://core.telegram.org/getProxyConfig
   [[ "$(wc -c < "${upstream_key}")" -eq 128 ]] || die "Telegram proxy secret has an unexpected format."
-  [[ "$(wc -c < "${config}")" -ge 100 ]] && grep -q '^default ' "${config}" && grep -q '^proxy_for ' "${config}" || die "Telegram proxy configuration has an unexpected format."
+  if [[ "$(wc -c < "${config}")" -lt 100 ]] || ! grep -q '^default ' "${config}" || ! grep -q '^proxy_for ' "${config}"; then
+    die "Telegram proxy configuration has an unexpected format."
+  fi
   install -o root -g mtproxy -m 0640 "${upstream_key}" "${MTPROXY_ETC}/proxy-secret"
   install -o root -g mtproxy -m 0640 "${config}" "${MTPROXY_ETC}/proxy-multi.conf"
 }
