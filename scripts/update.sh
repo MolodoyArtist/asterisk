@@ -16,6 +16,7 @@ CLI_BIN="${VPNCTL_CLI_BIN:-/usr/local/bin/vpnctl}"
 PYTHON_BIN="${VPNCTL_PYTHON_BIN:-/usr/bin/python3}"
 HELPER_DIR="${VPNCTL_HELPER_DIR:-/usr/local/lib/vpnctl}"
 UFW_APP_DIR="${VPNCTL_UFW_APP_DIR:-/etc/ufw/applications.d}"
+UFW_APP_FILE="${UFW_APP_DIR}/vpnctl-mtproxy"
 MTPROXY_ENV="${VPNCTL_MTPROXY_ENV:-/etc/mtproxy/vpnctl.env}"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-update.XXXXXX)"
@@ -72,6 +73,12 @@ finish() {
       install -m 0755 "${TEMP_DIR}/helpers/mtproxy-run" "${HELPER_DIR}/mtproxy-run" || restore_failed=1
     else
       rm -f -- "${HELPER_DIR}/mtproxy" "${HELPER_DIR}/mtproxy-run" || restore_failed=1
+    fi
+    if [[ -f "${TEMP_DIR}/mtproxy.ufw-profile" ]]; then
+      install -d -m 0755 "${UFW_APP_DIR}" || restore_failed=1
+      cp -a "${TEMP_DIR}/mtproxy.ufw-profile" "${UFW_APP_FILE}" || restore_failed=1
+    else
+      rm -f -- "${UFW_APP_FILE}" || restore_failed=1
     fi
     if [[ -f "${TEMP_DIR}/xray.binary" && -d "${TEMP_DIR}/xray-assets" ]]; then
       install -m 0755 "${TEMP_DIR}/xray.binary" "${XRAY_BIN}" || restore_failed=1
@@ -155,6 +162,7 @@ cp -a "${NGINX_SITE}" "${TEMP_DIR}/vpnctl.nginx"
 cp -a "${STATE_FILE}" "${TEMP_DIR}/state.json"
 [[ -f "${AUTH_FILE}" ]] && cp -a "${AUTH_FILE}" "${TEMP_DIR}/auth.json"
 [[ -f "${MTPROXY_ENV}" ]] && cp -a "${MTPROXY_ENV}" "${TEMP_DIR}/mtproxy.env"
+[[ -f "${UFW_APP_FILE}" ]] && cp -a "${UFW_APP_FILE}" "${TEMP_DIR}/mtproxy.ufw-profile"
 if [[ -x "${HELPER_DIR}/mtproxy" && -x "${HELPER_DIR}/mtproxy-run" ]]; then
   install -d -m 0700 "${TEMP_DIR}/helpers"
   cp -a "${HELPER_DIR}/mtproxy" "${HELPER_DIR}/mtproxy-run" "${TEMP_DIR}/helpers/"
