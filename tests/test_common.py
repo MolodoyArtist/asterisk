@@ -114,6 +114,11 @@ class CommonTests(unittest.TestCase):
         with self.assertRaises(AgentError):
             dispatch({"action": "reset_password", "payload": {}}, peer_uid=1000)
 
+    def test_xray_restart_does_not_restart_control_plane(self):
+        unit = (Path(__file__).resolve().parents[1] / "systemd" / "vpnctl-agent.service").read_text()
+        self.assertIn("Wants=nginx.service xray.service", unit)
+        self.assertNotIn("Requires=nginx.service xray.service", unit)
+
 
 if __name__ == "__main__":
     unittest.main()

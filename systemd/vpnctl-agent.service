@@ -1,7 +1,7 @@
 [Unit]
 Description=VPN appliance privileged agent
 After=network-online.target nginx.service xray.service
-Requires=nginx.service xray.service
+Wants=nginx.service xray.service
 
 [Service]
 Type=simple
