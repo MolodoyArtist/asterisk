@@ -147,6 +147,27 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("invalid QR code", response_body)
 
+    def test_domain_workflow_stays_on_the_current_origin(self):
+        headers, csrf = self.authenticated_headers()
+        status_result = {
+            "domain": None,
+            "public_ip": "192.0.2.10",
+            "public_ipv6": None,
+            "tls_mode": "ip",
+        }
+        with mock.patch("vpnctl.web.call", return_value=status_result):
+            status, response_headers, _ = self.request("GET", "/domain", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("Location", response_headers)
+
+        body = urllib.parse.urlencode({"domain": "access.example.com", "csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        with mock.patch("vpnctl.web.call", return_value={"domain": "access.example.com"}):
+            status, response_headers, _ = self.request("POST", "/domain/check", body, headers)
+        self.assertEqual(status, 303)
+        self.assertTrue(response_headers["Location"].startswith("/domain?"))
+        self.assertFalse(response_headers["Location"].startswith("https://"))
+
     def test_unreadable_auth_file_returns_503_without_leaking_hash_slot(self):
         original = web.AUTH_FILE
         web.AUTH_FILE = Path(self.tempdir.name) / "missing.json"
