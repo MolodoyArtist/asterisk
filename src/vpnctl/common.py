@@ -27,7 +27,7 @@ DEFAULT_KEY = CONFIG_DIR / "tls" / "default.key"
 PANEL_PORT = 8443
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
-DOMAIN_RE = re.compile(r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$", re.I)
+DOMAIN_RE = re.compile(r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{24,64}")
 SHORT_ID_RE = re.compile(r"[0-9a-f]{2,16}")
 
@@ -315,7 +315,7 @@ def render_nginx(state: dict[str, Any]) -> str:
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\w:])")
 UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b")
-URI_SECRET_RE = re.compile(r"vless://[^\s<]+", re.I)
+URI_SECRET_RE = re.compile(r"vless://[^\s<]+", re.IGNORECASE)
 
 
 def redact_log(text: str) -> str:

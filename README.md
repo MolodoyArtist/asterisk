@@ -36,7 +36,7 @@ already hosts websites.
 Connect to the VPS over SSH and run:
 
 ```bash
-curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.0/vpnctl-bootstrap-v0.2.0.sh | sudo bash
+curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.1/vpnctl-bootstrap-v0.2.1.sh | sudo bash
 ```
 
 Do not replace the release tag with `main`. The bootstrap contains the expected

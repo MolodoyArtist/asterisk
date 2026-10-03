@@ -188,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/certificates/renew": ("certificate_renew", {}, "/?renewed=1"),
             }
             action, payload, target = routes[self.path]
-            result = call(action, payload)
+            call(action, payload)
             if fields.get("domain"):
                 target += "&domain=" + urllib.parse.quote(fields["domain"])
             self.redirect(target)
