@@ -46,7 +46,10 @@ if ! reality_keys="$("${TEMP_DIR}/xray/xray" x25519 2>&1)"; then
 fi
 reality_private_key="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${reality_keys}")"
 reality_public_key="$(awk -F': ' '/^(Public key|Password):/{print $2; exit}' <<<"${reality_keys}")"
-[[ -n "${reality_private_key}" && -n "${reality_public_key}" ]]
+if [[ -z "${reality_private_key}" || -z "${reality_public_key}" ]]; then
+  printf 'Unrecognized Xray x25519 output: %s\n' "$(sed -E 's/: .*/: [redacted]/' <<<"${reality_keys}" | tr '\n' ';')" >&2
+  exit 1
+fi
 
 printf 'Rendering test configurations\n'
 VPNCTL_CONFIG_DIR="${TEMP_DIR}/config" \
