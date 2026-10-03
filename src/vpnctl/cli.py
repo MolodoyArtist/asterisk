@@ -35,7 +35,6 @@ def main() -> None:
     check.add_argument("hostname")
     add_domain = domain_sub.add_parser("add")
     add_domain.add_argument("hostname")
-    domain_sub.add_parser("disable-ip")
 
     cert = sub.add_parser("certificate")
     cert_sub = cert.add_subparsers(dest="cert_command", required=True)
@@ -53,7 +52,7 @@ def main() -> None:
                     or (item.get("days_remaining") is not None and item["days_remaining"] <= 1)
                     for item in result["certificates"]
                 )
-                if not all(result["services"].values()) or bad_certificate:
+                if not all(result["services"].values()) or not all(result.get("checks", {}).values()) or bad_certificate:
                     raise SystemExit(1)
         elif args.command == "admin":
             emit(call("reset_password"))
@@ -69,8 +68,6 @@ def main() -> None:
                 emit(call("domain_check", {"domain": args.hostname}))
             elif args.domain_command == "add":
                 emit(call("domain_add", {"domain": args.hostname}))
-            else:
-                emit(call("ip_disable"))
         elif args.command == "certificate":
             emit(call("certificate_renew"))
     except RPCError as exc:

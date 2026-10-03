@@ -5,6 +5,8 @@ umask 077
 REPOSITORY="${VPNCTL_REPOSITORY:-MolodoyArtist/asterisk}"
 BRANCH="${VPNCTL_BRANCH:-main}"
 XRAY_VERSION="${VPNCTL_XRAY_VERSION:-v26.3.27}"
+REALITY_TARGET="${VPNCTL_REALITY_TARGET:-}"
+REALITY_TARGETS="${VPNCTL_REALITY_TARGETS:-dl.google.com,www.apple.com,www.bing.com}"
 INSTALL_DIR=/opt/vpnctl
 ACME_ROOT=/var/www/vpnctl-acme
 RESULT_FILE=/root/vpnctl-install.json
@@ -44,6 +46,19 @@ if [[ -e /var/lib/vpnctl/state.json ]]; then
 fi
 [[ ! -e "${RESULT_FILE}" ]] || die "${RESULT_FILE} already exists. Move or delete it before installing."
 
+log "Checking VPS prerequisites"
+MEMORY_KIB="$(awk '/MemTotal:/ {print $2}' /proc/meminfo)"
+DISK_KIB="$(df -Pk / | awk 'NR == 2 {print $4}')"
+(( MEMORY_KIB >= 524288 )) || die "At least 512 MiB of RAM is required."
+(( DISK_KIB >= 2097152 )) || die "At least 2 GiB of free disk space is required."
+if command -v ss >/dev/null 2>&1; then
+  for required_port in 80 443 8443; do
+    if ss -H -ltn "sport = :${required_port}" | grep -q .; then
+      die "TCP port ${required_port} is already in use. Run this only on a fresh VPS."
+    fi
+  done
+fi
+
 log "Installing operating-system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -76,6 +91,21 @@ unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
 install -m 0755 "${TEMP_DIR}/xray/xray" /usr/local/bin/xray
 install -d -m 0755 /usr/local/share/xray
 install -m 0644 "${TEMP_DIR}/xray/geoip.dat" "${TEMP_DIR}/xray/geosite.dat" /usr/local/share/xray/
+
+log "Selecting a tested REALITY camouflage target"
+if [[ -z "${REALITY_TARGET}" ]]; then
+  IFS=',' read -r -a TARGET_CANDIDATES <<<"${REALITY_TARGETS}"
+  for candidate in "${TARGET_CANDIDATES[@]}"; do
+    candidate="${candidate//[[:space:]]/}"
+    [[ -n "${candidate}" ]] || continue
+    if /usr/local/bin/xray tls ping "${candidate}" >/dev/null 2>&1; then
+      REALITY_TARGET="${candidate}"
+      break
+    fi
+  done
+fi
+[[ -n "${REALITY_TARGET}" ]] || die "No tested REALITY target is reachable. Set VPNCTL_REALITY_TARGET=hostname and try again."
+printf 'Camouflage target selected: %s\n' "${REALITY_TARGET}"
 
 log "Creating restricted service accounts"
 getent group xray >/dev/null || groupadd --system xray
@@ -144,6 +174,7 @@ for ssh_port in "${SSH_PORTS[@]}"; do
 done
 ufw allow 80/tcp comment 'HTTP certificate validation' >/dev/null
 ufw allow 443/tcp comment 'HTTPS' >/dev/null
+ufw allow 8443/tcp comment 'Account portal and domain profile' >/dev/null
 ufw --force enable >/dev/null
 
 MODE=ip
@@ -208,10 +239,23 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj '/CN=localhost' \
 chmod 0600 /etc/vpnctl/tls/default.key
 chmod 0644 /etc/vpnctl/tls/default.crt
 
+log "Generating REALITY credentials"
+REALITY_KEYS="$(/usr/local/bin/xray x25519)"
+REALITY_PRIVATE_KEY="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${REALITY_KEYS}")"
+REALITY_PUBLIC_KEY="$(awk -F': ' '/Public key/{print $2; exit}' <<<"${REALITY_KEYS}")"
+[[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] || die "Could not generate REALITY keys."
+REALITY_SHORT_ID="$(openssl rand -hex 8)"
+PYTHONPATH="${INSTALL_DIR}/src" /usr/bin/python3 - "${REALITY_TARGET}" <<'PY'
+from vpnctl.common import validate_domain
+import sys
+validate_domain(sys.argv[1])
+PY
+
 log "Generating private configuration"
 BOOTSTRAP=(/usr/bin/python3 -m vpnctl.bootstrap --public-ip "${PUBLIC_IP}" --output "${RESULT_FILE}")
 [[ -n "${PUBLIC_IPV6}" ]] && BOOTSTRAP+=(--public-ipv6 "${PUBLIC_IPV6}")
 [[ "${MODE}" == domain ]] && BOOTSTRAP+=(--domain "${DOMAIN}")
+BOOTSTRAP+=(--reality-target "${REALITY_TARGET}" --reality-private-key "${REALITY_PRIVATE_KEY}" --reality-public-key "${REALITY_PUBLIC_KEY}" --reality-short-id "${REALITY_SHORT_ID}")
 PYTHONPATH="${INSTALL_DIR}/src" "${BOOTSTRAP[@]}"
 PYTHONPATH="${INSTALL_DIR}/src" XRAY_LOCATION_ASSET=/usr/local/share/xray /usr/bin/python3 - <<'PY'
 from vpnctl.agent import install_nginx, load_state, validate_and_install_xray
@@ -239,6 +283,25 @@ EOF
 systemctl restart systemd-journald
 systemctl daemon-reload
 systemctl enable --now xray vpnctl-agent vpnctl-web vpnctl-health.timer
+
+log "Hardening SSH when a key is available"
+SSH_KEY_READY=0
+for ssh_key_file in /root/.ssh/authorized_keys; do
+  [[ -s "${ssh_key_file}" ]] && SSH_KEY_READY=1
+done
+if [[ "${SSH_KEY_READY}" == 1 ]]; then
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat >/etc/ssh/sshd_config.d/99-vpnctl-key-only.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+EOF
+  /usr/sbin/sshd -t
+  systemctl reload ssh || systemctl reload sshd
+  printf 'Password SSH login disabled because an authorized key was found.\n'
+else
+  printf 'No root authorized_keys file found; password SSH login was left enabled to avoid lockout.\n' >&2
+fi
 
 log "Configuring firewall"
 ufw status verbose

@@ -1,3 +1,4 @@
+import base64
 import http.client
 import json
 import sys
@@ -127,13 +128,11 @@ class WebTests(unittest.TestCase):
         self.assertIn("temporarily unavailable", response_body)
 
     def test_malformed_agent_result_returns_502_instead_of_dropping_connection(self):
-        headers, csrf = self.authenticated_headers()
-        body = urllib.parse.urlencode({"csrf": csrf})
-        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        headers, _ = self.authenticated_headers()
         with mock.patch("vpnctl.web.call", return_value={}):
-            status, _, response_body = self.request("POST", "/domain/disable-ip", body, headers)
+            status, _, response_body = self.request("GET", "/domain", headers=headers)
         self.assertEqual(status, 502)
-        self.assertIn("invalid data", response_body)
+        self.assertIn("Temporarily unavailable", response_body)
 
     def test_invalid_and_oversized_content_lengths_are_rejected(self):
         for length, expected in (("invalid", 400), ("-1", 400), (str(web.MAX_FORM_BYTES + 1), 413)):
@@ -147,13 +146,21 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("invalid QR code", response_body)
 
+    def test_xhttp_qr_requests_the_xhttp_profile(self):
+        headers, _ = self.authenticated_headers()
+        png = base64.b64encode(b"test-png").decode()
+        with mock.patch("vpnctl.web.call", return_value={"png": png}) as call:
+            status, _, body = self.request("GET", "/qr?name=phone&profile=xhttp", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "test-png")
+        call.assert_called_once_with("client_qr", {"name": "phone", "profile": "xhttp"})
+
     def test_domain_workflow_stays_on_the_current_origin(self):
         headers, csrf = self.authenticated_headers()
         status_result = {
             "domain": None,
             "public_ip": "192.0.2.10",
             "public_ipv6": None,
-            "tls_mode": "ip",
         }
         with mock.patch("vpnctl.web.call", return_value=status_result):
             status, response_headers, _ = self.request("GET", "/domain", headers=headers)

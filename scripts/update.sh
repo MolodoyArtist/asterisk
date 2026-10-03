@@ -49,6 +49,7 @@ finish() {
     done
     cp -a "${TEMP_DIR}/xray.json" "${XRAY_CONFIG}" || restore_failed=1
     cp -a "${TEMP_DIR}/vpnctl.nginx" "${NGINX_SITE}" || restore_failed=1
+    cp -a "${TEMP_DIR}/state.json" "${STATE_FILE}" || restore_failed=1
     "${SYSTEMCTL_BIN}" daemon-reload || restore_failed=1
     "${NGINX_BIN}" -t || restore_failed=1
     "${SYSTEMCTL_BIN}" reload nginx || restore_failed=1
@@ -92,9 +93,11 @@ STAGED_OWNED=1
 find "${STAGED_SRC}" -type d -exec chmod 0755 {} +
 find "${STAGED_SRC}" -type f -exec chmod 0644 {} +
 PYTHONPATH="${STAGED_SRC}" VPNCTL_STATE_DIR="$(dirname -- "${STATE_FILE}")" "${PYTHON_BIN}" -m compileall -q "${STAGED_SRC}"
-PYTHONPATH="${STAGED_SRC}" VPNCTL_STATE_DIR="$(dirname -- "${STATE_FILE}")" "${PYTHON_BIN}" - <<'PY'
-from vpnctl.common import load_state
-load_state()
+"${PYTHON_BIN}" - "${STATE_FILE}" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(value, dict) or value.get("schema") not in (1, 2):
+    raise SystemExit("unsupported state schema")
 PY
 bash -n "${ROOT}/install.sh" "${ROOT}/scripts/check-repository.sh" "${ROOT}/scripts/integration-smoke.sh" "${ROOT}/scripts/update.sh" "${ROOT}/scripts/update-smoke.sh"
 
@@ -104,6 +107,7 @@ for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl
 done
 cp -a "${XRAY_CONFIG}" "${TEMP_DIR}/xray.json"
 cp -a "${NGINX_SITE}" "${TEMP_DIR}/vpnctl.nginx"
+cp -a "${STATE_FILE}" "${TEMP_DIR}/state.json"
 ROLLBACK_READY=1
 mv "${INSTALL_DIR}/src" "${BACKUP_SRC}"
 BACKUP_OWNED=1
@@ -113,6 +117,9 @@ install -m 0644 "${ROOT}"/systemd/*.service "${ROOT}"/systemd/*.timer "${SYSTEMD
 
 log "Regenerating configuration"
 "${SYSTEMCTL_BIN}" daemon-reload
+log "Migrating saved settings when needed"
+PYTHONPATH="${INSTALL_DIR}/src" "${PYTHON_BIN}" -m vpnctl.migrate \
+  --state-file "${STATE_FILE}"
 PYTHONPATH="${INSTALL_DIR}/src" \
 VPNCTL_STATE_DIR="$(dirname -- "${STATE_FILE}")" \
 VPNCTL_CONFIG_DIR="$(dirname -- "${XRAY_CONFIG}")" \

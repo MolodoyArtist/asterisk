@@ -220,14 +220,19 @@ def mutate_clients(mutator: Callable[[dict[str, Any]], Any]) -> Any:
 def action_status(_: dict[str, Any]) -> dict[str, Any]:
     state = load_state()
     certs = []
-    if state.get("ip_mode"):
+    if not state.get("domain"):
         certs.append(certificate_info(state["public_ip"]))
     if state.get("domain"):
         certs.append(certificate_info(state["domain"]))
+    metrics = system_metrics()
     return {
         "services": {"xray": service_active("xray"), "nginx": service_active("nginx"), "panel": service_active("vpnctl-web")},
-        "metrics": system_metrics(),
-        "tls_mode": "dual" if state.get("ip_mode") and state.get("domain") else ("domain" if state.get("domain") else "ip"),
+        "metrics": metrics,
+        "checks": {
+            "memory": metrics["memory_available"] >= 64 * 1024 * 1024,
+            "disk": metrics["disk_free"] >= 512 * 1024 * 1024,
+        },
+        "profiles": {"reality": state.get("layout", "reality-primary") == "reality-primary", "xhttp": bool(state.get("domain")) or state.get("layout") == "legacy-xhttp-primary"},
         "domain": state.get("domain"),
         "public_ip": state.get("public_ip"),
         "public_ipv6": state.get("public_ipv6"),
@@ -242,9 +247,10 @@ def action_clients(_: dict[str, Any]) -> dict[str, Any]:
     for client in state.get("clients", []):
         row = {"name": client["name"], "enabled": client.get("enabled", True), "created_at": client.get("created_at", "")}
         if row["enabled"]:
-            row["uri"] = client_uri(state, client, prefer_domain=True)
-            if state.get("domain") and state.get("ip_mode"):
-                row["ip_uri"] = client_uri(state, client, prefer_domain=False)
+            if state.get("layout", "reality-primary") == "reality-primary":
+                row["reality_uri"] = client_uri(state, client, "reality")
+            if state.get("domain") or state.get("layout") == "legacy-xhttp-primary":
+                row["xhttp_uri"] = client_uri(state, client, "xhttp")
         items.append(row)
     return {"clients": items}
 
@@ -257,7 +263,8 @@ def action_client_add(payload: dict[str, Any]) -> dict[str, Any]:
             raise AgentError("A client with this name already exists.")
         client = {"name": name, "id": str(uuid.uuid4()), "enabled": True, "created_at": int(time.time())}
         state.setdefault("clients", []).append(client)
-        return {"name": name, "uri": client_uri(state, client)}
+        profile = "reality" if state.get("layout", "reality-primary") == "reality-primary" else "xhttp"
+        return {"name": name, "uri": client_uri(state, client, profile)}
 
     return mutate_clients(add)
 
@@ -286,7 +293,7 @@ def action_client_qr(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [QRENCODE_BIN, "-t", "PNG", "-s", "6", "-m", "2", "-o", "-"],
-            input=client_uri(state, client).encode(),
+            input=client_uri(state, client, str(payload.get("profile", "reality"))).encode(),
             capture_output=True,
             timeout=15,
             check=False,  # nosec B603
@@ -330,32 +337,25 @@ def action_domain_add(payload: dict[str, Any]) -> dict[str, Any]:
         state["domain"] = domain
         state["domain_added_at"] = int(time.time())
         try:
+            validate_and_install_xray(state)
             install_nginx(state)
             save_state(state)
         except Exception:
+            validate_and_install_xray(original)
             install_nginx(original)
             raise
-        return {"domain": domain, "mode": "dual" if state.get("ip_mode") else "domain"}
+        restart = run([SYSTEMCTL_BIN, "restart", "xray"], 30)
+        if restart.returncode != 0:
+            validate_and_install_xray(original)
+            install_nginx(original)
+            save_state(original)
+            run([SYSTEMCTL_BIN, "restart", "xray"], 30)
+            raise AgentError("Xray restart failed. The previous configuration was restored.")
+        return {"domain": domain, "xhttp": True}
 
 
 def action_ip_disable(_: dict[str, Any]) -> dict[str, Any]:
-    with LOCK:
-        state = load_state()
-        if not state.get("domain"):
-            raise AgentError("Add and test a domain before disabling IP mode.")
-        original = json.loads(json.dumps(state))
-        state["ip_mode"] = False
-        try:
-            install_nginx(state)
-            save_state(state)
-            renewal = Path("/etc/letsencrypt/renewal") / f"{original['public_ip']}.conf"
-            if renewal.exists():
-                os.replace(renewal, renewal.with_suffix(".conf.disabled"))
-        except Exception:
-            install_nginx(original)
-            save_state(original)
-            raise
-        return {"ip_mode": False, "domain": state["domain"]}
+    raise AgentError("IP panel access remains enabled for recovery and cannot be disabled.")
 
 
 def action_certificate_renew(_: dict[str, Any]) -> dict[str, Any]:
@@ -402,7 +402,6 @@ ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "client_qr": action_client_qr,
     "domain_check": action_domain_check,
     "domain_add": action_domain_add,
-    "ip_disable": action_ip_disable,
     "certificate_renew": action_certificate_renew,
     "logs": action_logs,
     "reset_password": action_reset_password,

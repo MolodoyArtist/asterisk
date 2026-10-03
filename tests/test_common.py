@@ -34,13 +34,20 @@ from vpnctl.common import (
     verify_password,
     verify_session,
 )
+from vpnctl.migrate import migrate_state
 
 STATE = {
     "public_ip": "192.0.2.10",
     "public_ipv6": None,
-    "ip_mode": True,
     "domain": None,
     "xhttp_path": "A_random_path_with_enough_entropy",
+    "reality": {
+        "target": "www.example.com",
+        "server_name": "www.example.com",
+        "private_key": "private-key",
+        "public_key": "public-key",
+        "short_id": "a1b2c3d4",
+    },
     "clients": [{"name": "phone", "id": "00000000-0000-4000-8000-000000000001", "enabled": True}],
 }
 
@@ -72,14 +79,17 @@ class CommonTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_domain(value)
 
-    def test_uri_uses_xhttp_and_tls(self):
+    def test_uri_uses_reality_and_domain_xhttp(self):
         uri = client_uri(STATE, STATE["clients"][0])
-        self.assertIn("type=xhttp", uri)
-        self.assertIn("security=tls", uri)
+        self.assertIn("type=tcp", uri)
+        self.assertIn("security=reality", uri)
+        self.assertIn("flow=xtls-rprx-vision", uri)
         self.assertIn("192.0.2.10", uri)
-        self.assertNotIn("sni=", uri)
         domain_state = dict(STATE, domain="access.example.com")
-        domain_uri = client_uri(domain_state, STATE["clients"][0])
+        domain_uri = client_uri(domain_state, STATE["clients"][0], "xhttp")
+        self.assertIn("type=xhttp", domain_uri)
+        self.assertIn("security=tls", domain_uri)
+        self.assertIn(":8443", domain_uri)
         self.assertIn("sni=access.example.com", domain_uri)
         self.assertIn("host=access.example.com", domain_uri)
 
@@ -87,7 +97,8 @@ class CommonTests(unittest.TestCase):
         config = json.loads(render_xray(STATE))
         self.assertEqual(config["log"]["access"], "none")
         self.assertEqual(config["log"]["error"], "none")
-        self.assertEqual(config["inbounds"][0]["listen"], "127.0.0.1")
+        self.assertEqual(config["inbounds"][0]["port"], 443)
+        self.assertEqual(config["inbounds"][0]["streamSettings"]["security"], "reality")
         self.assertIn("geoip:private", config["routing"]["rules"][0]["ip"])
 
     def test_nginx_masks_unknown_hosts_and_paths(self):
@@ -95,13 +106,13 @@ class CommonTests(unittest.TestCase):
         config = render_nginx(state)
         self.assertIn("access_log off", config)
         self.assertIn("error_page 400 404 405 =404", config)
-        self.assertIn("error_page 404 = @vpnctl_not_found", config)
+        self.assertIn("error_page 404 = @not_found", config)
         self.assertIn("limit_req zone=vpnctl_login", config)
         self.assertIn("client_max_body_size 0", config)
         self.assertIn("client_max_body_size 16k", config)
         self.assertIn("server_name access.example.com", config)
-        self.assertIn('if ($host != "192.0.2.10")', config)
-        self.assertEqual(config.count("listen 443 ssl http2 default_server"), 1)
+        self.assertIn("server_name _;", config)
+        self.assertEqual(config.count("listen 8443 ssl http2 default_server"), 1)
 
     def test_redaction(self):
         value = "from 192.0.2.10 id 00000000-0000-4000-8000-000000000001 vless://secret@example.com"
@@ -122,7 +133,7 @@ class CommonTests(unittest.TestCase):
             check_domain(state, "access.example.com")
 
     def test_state_integrity_validation(self):
-        valid = dict(STATE, schema=1)
+        valid = dict(STATE, schema=2)
         validate_state(valid)
         duplicate = dict(valid, clients=[valid["clients"][0], dict(valid["clients"][0])])
         with self.assertRaises(ValidationError):
@@ -131,13 +142,34 @@ class CommonTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_state(weak_path)
         for invalid in (
-            dict(valid, ip_mode="yes"),
-            dict(valid, ip_mode=False, domain=None),
             dict(valid, domain="Access.Example.COM"),
             dict(valid, clients=[dict(valid["clients"][0], enabled="yes")]),
         ):
             with self.assertRaises(ValidationError):
                 validate_state(invalid)
+
+    def test_v1_state_migration_preserves_devices_and_domain(self):
+        old = dict(STATE, schema=1, domain="access.example.com", ip_mode=True)
+        old.pop("reality")
+        migrated = migrate_state(old)
+        self.assertEqual(migrated["schema"], 2)
+        self.assertEqual(migrated["clients"], old["clients"])
+        self.assertEqual(migrated["domain"], "access.example.com")
+        self.assertNotIn("ip_mode", migrated)
+        self.assertEqual(migrated["layout"], "legacy-xhttp-primary")
+        self.assertIn(":443?", client_uri(migrated, migrated["clients"][0], "xhttp"))
+        self.assertIn("listen 443 ssl http2 default_server", render_nginx(migrated))
+        with self.assertRaises(ValidationError):
+            client_uri(migrated, migrated["clients"][0], "reality")
+        config = json.loads(render_xray(migrated))
+        self.assertEqual([inbound["port"] for inbound in config["inbounds"]], [5555])
+
+    def test_domain_first_nginx_uses_local_default_certificate(self):
+        state = dict(STATE, schema=2, layout="reality-primary", domain="access.example.com")
+        config = render_nginx(state)
+        self.assertIn("listen 8443 ssl http2 default_server", config)
+        self.assertIn("/etc/vpnctl/tls/default.crt", config)
+        self.assertNotIn("/etc/letsencrypt/live/192.0.2.10/fullchain.pem", config)
 
     def test_password_reset_is_root_only(self):
         with self.assertRaises(AgentError):
@@ -149,7 +181,7 @@ class CommonTests(unittest.TestCase):
                 dispatch(request)  # type: ignore[arg-type]
 
     def test_client_mutation_rolls_back_after_restart_failure(self):
-        original = dict(STATE, schema=1)
+        original = dict(STATE, schema=2)
         with (
             mock.patch("vpnctl.agent.load_state", return_value=original),
             mock.patch("vpnctl.agent.validate_and_install_xray") as install_xray,
@@ -163,33 +195,26 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(save_state.call_args_list[-1].args[0], original)
 
     def test_domain_add_restores_nginx_when_state_write_fails(self):
-        original = dict(STATE, schema=1)
+        original = dict(STATE, schema=2)
         expected_original = json.loads(json.dumps(original))
         with (
             mock.patch("vpnctl.agent.load_state", return_value=original),
             mock.patch("vpnctl.agent.check_domain", return_value={"domain": "access.example.com"}),
             mock.patch("vpnctl.agent.run", return_value=mock.Mock(returncode=0)),
+            mock.patch("vpnctl.agent.validate_and_install_xray") as install_xray,
             mock.patch("vpnctl.agent.install_nginx") as install_nginx,
             mock.patch("vpnctl.agent.save_state", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             action_domain_add({"domain": "access.example.com"})
         self.assertEqual(install_nginx.call_count, 2)
+        self.assertEqual(install_xray.call_count, 2)
         self.assertEqual(install_nginx.call_args_list[0].args[0]["domain"], "access.example.com")
         self.assertEqual(install_nginx.call_args_list[1].args[0], expected_original)
 
-    def test_ip_disable_restores_original_state_after_nginx_failure(self):
-        original = dict(STATE, schema=1, domain="access.example.com")
-        expected_original = json.loads(json.dumps(original))
-        with (
-            mock.patch("vpnctl.agent.load_state", return_value=original),
-            mock.patch("vpnctl.agent.install_nginx", side_effect=[AgentError("reload failed"), None]) as install_nginx,
-            mock.patch("vpnctl.agent.save_state") as save_state,
-            self.assertRaisesRegex(AgentError, "reload failed"),
-        ):
+    def test_ip_panel_access_cannot_be_disabled(self):
+        with self.assertRaisesRegex(AgentError, "cannot be disabled"):
             action_ip_disable({})
-        self.assertEqual(install_nginx.call_count, 2)
-        save_state.assert_called_once_with(expected_original)
 
     def test_password_reset_writes_with_service_owner_atomically(self):
         auth = {"username": "member-test", "password": {}, "session_secret": "old"}

@@ -29,6 +29,10 @@ def main() -> None:
     parser.add_argument("--public-ip", required=True)
     parser.add_argument("--public-ipv6")
     parser.add_argument("--domain")
+    parser.add_argument("--reality-target", required=True)
+    parser.add_argument("--reality-private-key", required=True)
+    parser.add_argument("--reality-public-key", required=True)
+    parser.add_argument("--reality-short-id", required=True)
     parser.add_argument("--client-name", default="first-device")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -43,6 +47,9 @@ def main() -> None:
         parser.error("--public-ip must be IPv4")
     public_ipv6 = validate_ip(args.public_ipv6) if args.public_ipv6 else None
     domain = validate_domain(args.domain) if args.domain else None
+    reality_target = validate_domain(args.reality_target)
+    if not all((args.reality_private_key, args.reality_public_key)):
+        parser.error("REALITY keys are required")
     client_name = validate_name(args.client_name)
     username = f"member-{random_token(5).lower()}"
     password = random_token(24)
@@ -53,13 +60,20 @@ def main() -> None:
         "created_at": int(time.time()),
     }
     state = {
-        "schema": 1,
+        "schema": 2,
         "created_at": int(time.time()),
         "public_ip": public_ip,
         "public_ipv6": public_ipv6,
-        "ip_mode": domain is None,
         "domain": domain,
+        "layout": "reality-primary",
         "xhttp_path": random_token(24),
+        "reality": {
+            "target": reality_target,
+            "server_name": reality_target,
+            "private_key": args.reality_private_key,
+            "public_key": args.reality_public_key,
+            "short_id": args.reality_short_id,
+        },
         "clients": [client],
     }
     auth = {
@@ -73,11 +87,11 @@ def main() -> None:
     chown(AUTH_FILE, "vpnctl", "vpnctl")
 
     result = {
-        "panel_url": f"https://{domain or public_ip}/",
+        "panel_url": f"https://{domain or public_ip}:8443/",
         "username": username,
         "password": password,
         "client_name": client_name,
-        "client_uri": client_uri(state, client),
+        "client_uri": client_uri(state, client, "reality"),
     }
     with open(args.output, "x", encoding="utf-8") as handle:
         os.fchmod(handle.fileno(), 0o600)

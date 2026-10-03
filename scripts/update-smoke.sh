@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
+[[ "${EUID}" -eq 0 || "${VPNCTL_SMOKE_ALLOW_NONROOT:-0}" == 1 ]] || { echo 'run as root' >&2; exit 1; }
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_ROOT="$(mktemp -d /tmp/vpnctl-update-smoke.XXXXXX)"
@@ -14,6 +14,9 @@ make_fake_command() {
 set -eu
 if [[ "${0##*/}" == vpnctl && "${VPNCTL_SMOKE_FAIL_DOCTOR:-0}" == 1 ]]; then
   exit 1
+fi
+if [[ "${0##*/}" == xray && "${1:-}" == x25519 ]]; then
+  printf '%s\n' 'Private key: smoke-private-key' 'Public key: smoke-public-key'
 fi
 exit 0
 EOF
@@ -32,7 +35,6 @@ prepare_case() {
   "created_at": 1,
   "public_ip": "192.0.2.10",
   "public_ipv6": null,
-  "ip_mode": true,
   "domain": null,
   "xhttp_path": "A_random_path_with_enough_entropy",
   "clients": [
@@ -45,7 +47,7 @@ EOF
   for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service; do
     printf 'old %s\n' "${unit}" >"${case_dir}/systemd/${unit}"
   done
-  for command in systemctl nginx xray vpnctl; do
+  for command in systemctl nginx xray vpnctl ufw; do
     make_fake_command "${case_dir}/bin/${command}"
   done
 }
@@ -61,6 +63,7 @@ run_update() {
   VPNCTL_NGINX_BIN="${case_dir}/bin/nginx" \
   VPNCTL_XRAY_BIN="${case_dir}/bin/xray" \
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
+  VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
   VPNCTL_PYTHON_BIN=/usr/bin/python3 \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
@@ -69,11 +72,12 @@ run_update() {
 
 success_dir="${TEMP_ROOT}/success"
 prepare_case "${success_dir}"
-state_before="$(sha256sum "${success_dir}/state/state.json" | awk '{print $1}')"
 run_update "${success_dir}" 0
 [[ ! -e "${success_dir}/install/src/old-version-marker" ]]
 grep -q '^Wants=nginx.service xray.service$' "${success_dir}/systemd/vpnctl-agent.service"
-[[ "$(sha256sum "${success_dir}/state/state.json" | awk '{print $1}')" == "${state_before}" ]]
+grep -q '"schema": 2' "${success_dir}/state/state.json"
+grep -q '"private_key": "smoke-private-key"' "${success_dir}/state/state.json"
+grep -q '00000000-0000-4000-8000-000000000001' "${success_dir}/state/state.json"
 
 rollback_dir="${TEMP_ROOT}/rollback"
 prepare_case "${rollback_dir}"
