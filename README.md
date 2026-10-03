@@ -36,15 +36,23 @@ already hosts websites.
 Connect to the VPS over SSH and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MolodoyArtist/asterisk/main/install.sh | sudo bash
+curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.0/vpnctl-bootstrap-v0.2.0.sh | sudo bash
 ```
+
+Do not replace the release tag with `main`. The bootstrap contains the expected
+SHA-256 of the release archive and stops before installation if it does not
+match. `SHA256SUMS` and the exact commit ID are attached to each release for
+independent verification.
 
 The installer asks whether you already have a domain. The recommended REALITY
 profile is always created; a supplied domain additionally enables XHTTP + TLS.
 
-Running the same command again on an installed appliance performs a safe update
-with a backup and automatic rollback if an error occurs. Devices, the domain,
-and portal credentials are preserved.
+Run the command for a newer released version to update an installed appliance.
+The update stages and verifies the new files, Xray binary and routing assets
+before replacing anything. If a check, migration, configuration validation or
+service restart fails, it restores the previous application, Xray binary,
+assets, state, credentials, Nginx configuration and systemd units. Devices,
+the domain and portal credentials are preserved.
 
 For installations created by older XHTTP-only releases, the updater preserves
 the existing XHTTP + TLS endpoint and every existing client link. It does not
@@ -162,14 +170,23 @@ guidance.
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q src
-bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh
+bash -n install.sh scripts/*.sh
 bash scripts/check-repository.sh
 ```
 
-Xray is pinned to a reviewed version and its archive is checked against the
-SHA-256 published with the official release. Updating it requires an explicit
-change to `VPNCTL_XRAY_VERSION`; the installer never silently downloads an
-arbitrary `latest` build.
+Each project release pins an Xray version and hard-codes the reviewed SHA-256
+for each supported CPU architecture. The installer and updater reject an
+archive whose checksum does not match; they never download an arbitrary
+`latest` build. A project update can therefore update Xray and its routing
+assets atomically, with rollback.
+
+## Release integrity
+
+Install only a numbered project release, never the moving `main` branch. The
+release workflow builds an archive from the tagged commit, publishes its
+SHA-256, and renders a bootstrap that verifies that archive before it runs as
+root. Protect the `v*` tag pattern in GitHub so tags cannot be force-moved.
+A GitHub account or GitHub CLI is not installed on the VPS.
 
 ## License
 

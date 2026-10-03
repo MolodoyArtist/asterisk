@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify tag points to the checked-out commit
+        run: git describe --exact-match --tags HEAD
+      - name: Run release gate
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 -m compileall -q src
+          bash -n install.sh scripts/*.sh
+          bash scripts/check-repository.sh
+      - name: Run privileged smoke tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx ripgrep shellcheck
+          shellcheck install.sh scripts/*.sh
+          sudo bash scripts/integration-smoke.sh
+          sudo bash scripts/update-smoke.sh
+      - name: Build release archive and verified bootstrap
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git archive --format=tar --prefix="vpnctl-${RELEASE_TAG}/" HEAD | gzip -n >"vpnctl-${RELEASE_TAG}.tar.gz"
+          SHA256="$(sha256sum "vpnctl-${RELEASE_TAG}.tar.gz" | awk '{print $1}')"
+          sed -e "s/@RELEASE_TAG@/${RELEASE_TAG}/g" -e "s/@ARCHIVE_SHA256@/${SHA256}/g" \
+            scripts/release-bootstrap.sh.in >"vpnctl-bootstrap-${RELEASE_TAG}.sh"
+          chmod 0755 "vpnctl-bootstrap-${RELEASE_TAG}.sh"
+          sha256sum "vpnctl-${RELEASE_TAG}.tar.gz" "vpnctl-bootstrap-${RELEASE_TAG}.sh" >SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            --title "vpnctl ${RELEASE_TAG}" \
+            --generate-notes \
+            "vpnctl-${RELEASE_TAG}.tar.gz" \
+            "vpnctl-bootstrap-${RELEASE_TAG}.sh" \
+            SHA256SUMS

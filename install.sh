@@ -2,9 +2,6 @@
 set -Eeuo pipefail
 umask 077
 
-REPOSITORY="${VPNCTL_REPOSITORY:-MolodoyArtist/asterisk}"
-BRANCH="${VPNCTL_BRANCH:-main}"
-XRAY_VERSION="${VPNCTL_XRAY_VERSION:-v26.3.27}"
 REALITY_TARGET="${VPNCTL_REALITY_TARGET:-}"
 REALITY_TARGETS="${VPNCTL_REALITY_TARGETS:-dl.google.com,www.apple.com,www.bing.com}"
 INSTALL_DIR=/opt/vpnctl
@@ -30,13 +27,7 @@ cleanup() { rm -rf -- "${TEMP_DIR}"; }
 trap cleanup EXIT
 
 if [[ ! -f "${SOURCE_DIR}/src/vpnctl/common.py" ]]; then
-  log "Downloading installer files"
-  curl --fail --show-error --location --proto '=https' --tlsv1.2 \
-    "https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.tar.gz" \
-    -o "${TEMP_DIR}/source.tar.gz"
-  mkdir "${TEMP_DIR}/source"
-  tar -xzf "${TEMP_DIR}/source.tar.gz" -C "${TEMP_DIR}/source" --strip-components=1
-  SOURCE_DIR="${TEMP_DIR}/source"
+  die "Use the versioned release bootstrap; it verifies the source archive before running this installer."
 fi
 
 if [[ -e /var/lib/vpnctl/state.json ]]; then
@@ -73,24 +64,11 @@ ln -sfn /snap/bin/certbot /usr/local/bin/certbot
 /snap/bin/certbot certonly --help all >"${TEMP_DIR}/certbot-help.txt"
 grep -q -- '--ip-address' "${TEMP_DIR}/certbot-help.txt" || die "Installed Certbot does not support public IP certificates."
 
-log "Installing Xray ${XRAY_VERSION}"
-case "$(uname -m)" in
-  x86_64) XRAY_ARCH=64 ;;
-  aarch64|arm64) XRAY_ARCH=arm64-v8a ;;
-  *) die "Only x86_64 and arm64 VPS architectures are supported." ;;
-esac
-XRAY_BASE="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
-curl --fail --show-error --location --proto '=https' --tlsv1.2 "${XRAY_BASE}" -o "${TEMP_DIR}/xray.zip"
-curl --fail --show-error --location --proto '=https' --tlsv1.2 "${XRAY_BASE}.dgst" -o "${TEMP_DIR}/xray.dgst"
-EXPECTED_SHA256="$(awk 'BEGIN{IGNORECASE=1} /SHA2-256/{for(i=1;i<=NF;i++) if($i ~ /^[0-9a-fA-F]{64}$/){print tolower($i); exit}}' "${TEMP_DIR}/xray.dgst")"
-[[ -n "${EXPECTED_SHA256}" ]] || die "Could not read the published Xray checksum."
-ACTUAL_SHA256="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
-[[ "${ACTUAL_SHA256}" == "${EXPECTED_SHA256}" ]] || die "Xray checksum verification failed."
-mkdir "${TEMP_DIR}/xray"
-unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
-install -m 0755 "${TEMP_DIR}/xray/xray" /usr/local/bin/xray
-install -d -m 0755 /usr/local/share/xray
-install -m 0644 "${TEMP_DIR}/xray/geoip.dat" "${TEMP_DIR}/xray/geosite.dat" /usr/local/share/xray/
+# shellcheck source=scripts/xray.sh
+source "${SOURCE_DIR}/scripts/xray.sh"
+log "Installing pinned Xray ${XRAY_VERSION}"
+xray_stage "${TEMP_DIR}/xray" || die "Could not stage the verified Xray release."
+xray_install_stage "${TEMP_DIR}/xray" /usr/local/bin/xray /usr/local/share/xray
 
 log "Selecting a tested REALITY camouflage target"
 if [[ -z "${REALITY_TARGET}" ]]; then

@@ -17,3 +17,11 @@ other private deployment data in a public issue.
 The installer does not send deployment secrets to the repository maintainer.
 It contacts Ubuntu mirrors, Snap, GitHub, Let's Encrypt, and an IP-discovery
 service as part of installation.
+
+## Release trust
+
+Use only numbered GitHub releases and their `vpnctl-bootstrap-<version>.sh`
+asset. The bootstrap verifies the SHA-256 of the matching source archive before
+it starts the installer. Never pipe `main` or another moving branch into a
+root shell. Repository administrators must protect the `v*` tag pattern and
+limit release publishing permission to reviewed maintainers.

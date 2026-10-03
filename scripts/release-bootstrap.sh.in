@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+# This file is rendered by the release workflow. Do not publish this template.
+REPOSITORY='MolodoyArtist/asterisk'
+RELEASE_TAG='@RELEASE_TAG@'
+ARCHIVE_NAME='vpnctl-@RELEASE_TAG@.tar.gz'
+ARCHIVE_SHA256='@ARCHIVE_SHA256@'
+TEMP_DIR="$(mktemp -d /tmp/vpnctl-bootstrap.XXXXXX)"
+
+cleanup() { rm -rf -- "${TEMP_DIR}"; }
+trap cleanup EXIT
+
+curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+  "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/${ARCHIVE_NAME}" \
+  -o "${TEMP_DIR}/${ARCHIVE_NAME}"
+printf '%s  %s\n' "${ARCHIVE_SHA256}" "${TEMP_DIR}/${ARCHIVE_NAME}" | sha256sum -c -
+mkdir "${TEMP_DIR}/source"
+tar -xzf "${TEMP_DIR}/${ARCHIVE_NAME}" -C "${TEMP_DIR}/source" --strip-components=1
+exec bash "${TEMP_DIR}/source/install.sh"

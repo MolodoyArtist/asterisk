@@ -43,10 +43,11 @@ CSS = """
 """
 
 
-def layout(title: str, body: str, authenticated: bool = True) -> str:
+def layout(title: str, body: str, authenticated: bool = True, csrf: str | None = None) -> str:
     nav = ""
     if authenticated:
-        nav = """<nav><a href="/">Overview</a><a href="/clients">Devices</a><a href="/domain">Domain</a><a href="/logs">Logs</a><span class="grow"></span><form class="inline" method="post" action="/logout"><button>Sign out</button></form></nav>"""
+        logout = f'<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{h(csrf or "")}"><button>Sign out</button></form>' if csrf else ""
+        nav = f"""<nav><a href="/">Overview</a><a href="/clients">Devices</a><a href="/domain">Domain</a><a href="/logs">Logs</a><span class="grow"></span>{logout}</nav>"""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>{h(title)}</title><style>{CSS}</style></head><body><main>{nav}{body}</main></body></html>"""
 
 
@@ -172,13 +173,13 @@ class Handler(BaseHTTPRequestHandler):
         session = self.require_auth()
         if not session:
             return
-        if self.path == "/logout":
-            self.redirect("/", "__Host-session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
-            return
         if not self.csrf(session, fields):
             self.send_html(layout("Error", "<section><h1>Request expired</h1><p>Reload the page and try again.</p></section>"), 403)
             return
         try:
+            if self.path == "/logout":
+                self.redirect("/", "__Host-session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+                return
             routes = {
                 "/clients/add": ("client_add", {"name": fields.get("name", "")}, "/clients"),
                 "/clients/delete": ("client_delete", {"name": fields.get("name", "")}, "/clients"),
@@ -259,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
             domain_card = '<section class="notice"><h2>Add an optional domain profile</h2><p>A domain enables the additional VLESS + XHTTP + TLS profile. The recommended REALITY profile already works without one.</p><a class="button" href="/domain">Add a domain</a></section>'
         certs = "".join(f"<li>{h(c['name'])}: {h(c.get('days_remaining', '?'))} days remaining</li>" for c in status["certificates"])
         body = f"""<h1>Overview</h1>{domain_card}<h2>System</h2><div class="grid"><section><div class="muted">Services</div><div class="metric {'ok' if healthy else 'bad'}">{'Online' if healthy else 'Needs attention'}</div></section><section><div class="muted">Devices</div><div class="metric">{status['client_count']}</div></section><section><div class="muted">Connections</div><div class="metric">{metrics['connections']}</div></section><section><div class="muted">Load</div><div class="metric">{metrics['load'][0]}</div></section><section><div class="muted">Memory</div><div class="metric">{memory_used // 1048576} / {metrics['memory_total'] // 1048576} MiB</div></section><section><div class="muted">Disk free</div><div class="metric">{metrics['disk_free'] // 1073741824} GiB</div></section></div><section><h2>Certificates</h2><ul>{certs}</ul><form method="post" action="/certificates/renew"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Check renewal now</button></form></section>"""
-        self.send_html(layout("Overview", body))
+        self.send_html(layout("Overview", body, csrf=session["csrf"]))
 
     def clients(self, session: dict[str, Any]) -> None:
         rows = []
@@ -279,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
                 qr += f'<p><a href="/qr?name={urllib.parse.quote(item["name"])}&amp;profile=xhttp">Show XHTTP QR code</a></p>'
             rows.append(f"<tr><td>{h(item['name'])}</td><td>{uri}{qr}</td><td><form class=\"inline\" method=\"post\" action=\"/clients/delete\"><input type=\"hidden\" name=\"csrf\" value=\"{h(session['csrf'])}\"><input type=\"hidden\" name=\"name\" value=\"{h(item['name'])}\"><button class=\"danger\">Delete</button></form></td></tr>")
         body = f"""<h1>Devices</h1><section><p>Import the VLESS link into v2RayTun from the clipboard, or open its QR code and scan it in the app.</p><form method="post" action="/clients/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="name">Device name</label><input id="name" name="name" maxlength="32" pattern="[A-Za-z0-9_.-]+" required><p><button>Add device</button></p></form></section><section><table><thead><tr><th>Name</th><th>v2RayTun import link</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>"""
-        self.send_html(layout("Devices", body))
+        self.send_html(layout("Devices", body, csrf=session["csrf"]))
 
     def domain(self, session: dict[str, Any]) -> None:
         status = call("status")
@@ -298,11 +299,11 @@ class Handler(BaseHTTPRequestHandler):
             if "checked" in query and value:
                 activate_form = f"""<form method="post" action="/domain/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><input type="hidden" name="domain" value="{h(value)}"><button>Issue certificate and activate</button></form>"""
             domain_form = f"""<section><h2>1. Register a hostname</h2><p>The quickest free option is <a href="https://www.noip.com/personal" rel="noreferrer">No-IP</a>. Its free hostnames must be confirmed every 30 days.</p><h2>2. Point it to this server</h2><p>Create an A record whose value is <code>{h(status['public_ip'])}</code>.{ipv6_help}</p><h2>3. Check DNS and activate</h2><form method="post" action="/domain/check"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="domain">Hostname</label><input id="domain" name="domain" value="{h(value)}" placeholder="access.example.com" required><p><button>Check DNS</button></p></form>{activate_form}</section>"""
-        self.send_html(layout("Domain", f"<h1>Domain setup</h1>{banner}{domain_form}"))
+        self.send_html(layout("Domain", f"<h1>Domain setup</h1>{banner}{domain_form}", csrf=session["csrf"]))
 
-    def logs(self, _session: dict[str, Any]) -> None:
+    def logs(self, session: dict[str, Any]) -> None:
         text = call("logs")["text"]
-        self.send_html(layout("Logs", f"<h1>Sanitized logs</h1><section><p class=\"muted\">Recent service events only. Addresses, device identifiers and import links are redacted.</p><pre>{h(text)}</pre></section>"))
+        self.send_html(layout("Logs", f"<h1>Sanitized logs</h1><section><p class=\"muted\">Recent service events only. Addresses, device identifiers and import links are redacted.</p><pre>{h(text)}</pre></section>", csrf=session["csrf"]))
 
     def qr(self, name: str, profile: str) -> None:
         try:

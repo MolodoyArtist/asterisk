@@ -10,12 +10,15 @@ SYSTEMD_DIR="${VPNCTL_SYSTEMD_DIR:-/etc/systemd/system}"
 SYSTEMCTL_BIN="${VPNCTL_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
 NGINX_BIN="${VPNCTL_NGINX_BIN:-/usr/sbin/nginx}"
 XRAY_BIN="${VPNCTL_XRAY_BIN:-/usr/local/bin/xray}"
+XRAY_ASSET_DIR="${VPNCTL_XRAY_ASSET_DIR:-/usr/local/share/xray}"
+AUTH_FILE="${VPNCTL_AUTH_FILE:-/var/lib/vpnctl/auth.json}"
 CLI_BIN="${VPNCTL_CLI_BIN:-/usr/local/bin/vpnctl}"
 PYTHON_BIN="${VPNCTL_PYTHON_BIN:-/usr/bin/python3}"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-update.XXXXXX)"
 STAGED_SRC="${INSTALL_DIR}/src.update"
 BACKUP_SRC="${INSTALL_DIR}/src.rollback"
+STAGED_XRAY="${TEMP_DIR}/xray"
 ROLLBACK_READY=0
 STAGED_OWNED=0
 BACKUP_OWNED=0
@@ -50,6 +53,16 @@ finish() {
     cp -a "${TEMP_DIR}/xray.json" "${XRAY_CONFIG}" || restore_failed=1
     cp -a "${TEMP_DIR}/vpnctl.nginx" "${NGINX_SITE}" || restore_failed=1
     cp -a "${TEMP_DIR}/state.json" "${STATE_FILE}" || restore_failed=1
+    if [[ -f "${TEMP_DIR}/auth.json" ]]; then
+      cp -a "${TEMP_DIR}/auth.json" "${AUTH_FILE}" || restore_failed=1
+    fi
+    if [[ -f "${TEMP_DIR}/xray.binary" && -d "${TEMP_DIR}/xray-assets" ]]; then
+      install -m 0755 "${TEMP_DIR}/xray.binary" "${XRAY_BIN}" || restore_failed=1
+      install -d -m 0755 "${XRAY_ASSET_DIR}" || restore_failed=1
+      install -m 0644 "${TEMP_DIR}/xray-assets/geoip.dat" "${TEMP_DIR}/xray-assets/geosite.dat" "${XRAY_ASSET_DIR}/" || restore_failed=1
+    else
+      restore_failed=1
+    fi
     "${SYSTEMCTL_BIN}" daemon-reload || restore_failed=1
     "${NGINX_BIN}" -t || restore_failed=1
     "${SYSTEMCTL_BIN}" reload nginx || restore_failed=1
@@ -77,7 +90,7 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-[[ "${EUID}" -eq 0 ]] || die "Run this updater as root."
+[[ "${EUID}" -eq 0 || "${VPNCTL_SMOKE_ALLOW_NONROOT:-0}" == 1 ]] || die "Run this updater as root."
 [[ -f "${STATE_FILE}" ]] || die "vpnctl is not installed."
 [[ -d "${INSTALL_DIR}/src" ]] || die "The existing installation is incomplete."
 [[ -f "${ROOT}/src/vpnctl/common.py" ]] || die "Update sources are incomplete."
@@ -99,7 +112,17 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 if not isinstance(value, dict) or value.get("schema") not in (1, 2):
     raise SystemExit("unsupported state schema")
 PY
-bash -n "${ROOT}/install.sh" "${ROOT}/scripts/check-repository.sh" "${ROOT}/scripts/integration-smoke.sh" "${ROOT}/scripts/update.sh" "${ROOT}/scripts/update-smoke.sh"
+bash -n "${ROOT}/install.sh" "${ROOT}"/scripts/*.sh
+# shellcheck source=scripts/xray.sh
+source "${ROOT}/scripts/xray.sh"
+log "Staging pinned Xray ${XRAY_VERSION}"
+if [[ -n "${VPNCTL_XRAY_STAGE_DIR:-}" ]]; then
+  [[ -x "${VPNCTL_XRAY_STAGE_DIR}/xray" && -f "${VPNCTL_XRAY_STAGE_DIR}/geoip.dat" && -f "${VPNCTL_XRAY_STAGE_DIR}/geosite.dat" ]] || die "VPNCTL_XRAY_STAGE_DIR is incomplete."
+  mkdir -p "${STAGED_XRAY}/payload"
+  cp -a "${VPNCTL_XRAY_STAGE_DIR}/." "${STAGED_XRAY}/payload/"
+else
+  xray_stage "${STAGED_XRAY}" || die "Could not stage the verified Xray release."
+fi
 
 install -d -m 0700 "${TEMP_DIR}/units"
 for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service; do
@@ -108,6 +131,10 @@ done
 cp -a "${XRAY_CONFIG}" "${TEMP_DIR}/xray.json"
 cp -a "${NGINX_SITE}" "${TEMP_DIR}/vpnctl.nginx"
 cp -a "${STATE_FILE}" "${TEMP_DIR}/state.json"
+[[ -f "${AUTH_FILE}" ]] && cp -a "${AUTH_FILE}" "${TEMP_DIR}/auth.json"
+cp -a "${XRAY_BIN}" "${TEMP_DIR}/xray.binary"
+install -d -m 0700 "${TEMP_DIR}/xray-assets"
+cp -a "${XRAY_ASSET_DIR}/geoip.dat" "${XRAY_ASSET_DIR}/geosite.dat" "${TEMP_DIR}/xray-assets/"
 ROLLBACK_READY=1
 mv "${INSTALL_DIR}/src" "${BACKUP_SRC}"
 BACKUP_OWNED=1
@@ -124,16 +151,20 @@ PYTHONPATH="${INSTALL_DIR}/src" \
 VPNCTL_STATE_DIR="$(dirname -- "${STATE_FILE}")" \
 VPNCTL_CONFIG_DIR="$(dirname -- "${XRAY_CONFIG}")" \
 VPNCTL_NGINX_SITE="${NGINX_SITE}" \
-VPNCTL_XRAY_BIN="${XRAY_BIN}" \
+VPNCTL_XRAY_BIN="${STAGED_XRAY}/payload/xray" \
 VPNCTL_SYSTEMCTL_BIN="${SYSTEMCTL_BIN}" \
 VPNCTL_NGINX_BIN="${NGINX_BIN}" \
-XRAY_LOCATION_ASSET=/usr/local/share/xray \
+XRAY_LOCATION_ASSET="${STAGED_XRAY}/payload" \
 "${PYTHON_BIN}" - <<'PY'
 from vpnctl.agent import install_nginx, load_state, validate_and_install_xray
 state = load_state()
 validate_and_install_xray(state)
 install_nginx(state)
 PY
+
+log "Installing verified Xray ${XRAY_VERSION}"
+xray_install_stage "${STAGED_XRAY}" "${XRAY_BIN}" "${XRAY_ASSET_DIR}"
+XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" "${XRAY_BIN}" run -test -config "${XRAY_CONFIG}"
 
 log "Restarting services"
 "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web

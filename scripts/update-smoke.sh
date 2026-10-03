@@ -50,6 +50,10 @@ EOF
   for command in systemctl nginx xray vpnctl ufw; do
     make_fake_command "${case_dir}/bin/${command}"
   done
+  mkdir -p "${case_dir}/xray-stage"
+  cp -a "${case_dir}/bin/xray" "${case_dir}/xray-stage/xray"
+  printf '%s\n' 'new geoip' >"${case_dir}/xray-stage/geoip.dat"
+  printf '%s\n' 'new geosite' >"${case_dir}/xray-stage/geosite.dat"
 }
 
 run_update() {
@@ -62,6 +66,8 @@ run_update() {
   VPNCTL_SYSTEMCTL_BIN="${case_dir}/bin/systemctl" \
   VPNCTL_NGINX_BIN="${case_dir}/bin/nginx" \
   VPNCTL_XRAY_BIN="${case_dir}/bin/xray" \
+  VPNCTL_XRAY_ASSET_DIR="${case_dir}/assets" \
+  VPNCTL_XRAY_STAGE_DIR="${case_dir}/xray-stage" \
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
   VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
   VPNCTL_PYTHON_BIN=/usr/bin/python3 \
@@ -72,15 +78,22 @@ run_update() {
 
 success_dir="${TEMP_ROOT}/success"
 prepare_case "${success_dir}"
+mkdir -p "${success_dir}/assets"
+printf '%s\n' 'old geoip' >"${success_dir}/assets/geoip.dat"
+printf '%s\n' 'old geosite' >"${success_dir}/assets/geosite.dat"
 run_update "${success_dir}" 0
 [[ ! -e "${success_dir}/install/src/old-version-marker" ]]
 grep -q '^Wants=nginx.service xray.service$' "${success_dir}/systemd/vpnctl-agent.service"
 grep -q '"schema": 2' "${success_dir}/state/state.json"
-grep -q '"private_key": "smoke-private-key"' "${success_dir}/state/state.json"
+grep -q '"layout": "legacy-xhttp-primary"' "${success_dir}/state/state.json"
 grep -q '00000000-0000-4000-8000-000000000001' "${success_dir}/state/state.json"
+grep -q '^new geoip$' "${success_dir}/assets/geoip.dat"
 
 rollback_dir="${TEMP_ROOT}/rollback"
 prepare_case "${rollback_dir}"
+mkdir -p "${rollback_dir}/assets"
+printf '%s\n' 'old geoip' >"${rollback_dir}/assets/geoip.dat"
+printf '%s\n' 'old geosite' >"${rollback_dir}/assets/geosite.dat"
 state_before="$(sha256sum "${rollback_dir}/state/state.json" | awk '{print $1}')"
 if run_update "${rollback_dir}" 1; then
   echo 'the intentionally failing update unexpectedly succeeded' >&2
@@ -90,6 +103,7 @@ fi
 grep -q '^old vpnctl-agent.service$' "${rollback_dir}/systemd/vpnctl-agent.service"
 grep -q '^old xray configuration$' "${rollback_dir}/config/xray.json"
 grep -q '^old nginx configuration$' "${rollback_dir}/nginx/vpnctl"
+grep -q '^old geoip$' "${rollback_dir}/assets/geoip.dat"
 [[ "$(sha256sum "${rollback_dir}/state/state.json" | awk '{print $1}')" == "${state_before}" ]]
 
 recovery_dir="${TEMP_ROOT}/existing-recovery"

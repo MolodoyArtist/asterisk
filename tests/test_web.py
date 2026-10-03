@@ -118,6 +118,17 @@ class WebTests(unittest.TestCase):
         self.assertIn("Request expired", response_body)
         call.assert_not_called()
 
+    def test_logout_requires_csrf(self):
+        headers, csrf = self.authenticated_headers()
+        status, _, body = self.request("POST", "/logout", "", {**headers, "Content-Type": "application/x-www-form-urlencoded", "Content-Length": "0"})
+        self.assertEqual(status, 403)
+        self.assertIn("Request expired", body)
+        body = urllib.parse.urlencode({"csrf": csrf})
+        headers.update({"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))})
+        status, response_headers, _ = self.request("POST", "/logout", body, headers)
+        self.assertEqual(status, 303)
+        self.assertEqual(response_headers["Location"], "/")
+
     def test_agent_failure_returns_page_instead_of_dropping_connection(self):
         headers, csrf = self.authenticated_headers()
         body = urllib.parse.urlencode({"name": "tablet", "csrf": csrf})

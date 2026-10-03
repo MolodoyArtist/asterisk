@@ -108,6 +108,8 @@ class CommonTests(unittest.TestCase):
         self.assertIn("error_page 400 404 405 =404", config)
         self.assertIn("error_page 404 = @not_found", config)
         self.assertIn("limit_req zone=vpnctl_login", config)
+        self.assertIn("limit_conn_zone $binary_remote_addr zone=vpnctl_xhttp_conn", config)
+        self.assertIn("limit_conn vpnctl_xhttp_conn 32", config)
         self.assertIn("client_max_body_size 0", config)
         self.assertIn("client_max_body_size 16k", config)
         self.assertIn("server_name access.example.com", config)
@@ -244,6 +246,9 @@ class CommonTests(unittest.TestCase):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "vpnctl-agent.service").read_text()
         self.assertIn("Wants=nginx.service xray.service", unit)
         self.assertNotIn("Requires=nginx.service xray.service", unit)
+        xray_unit = (Path(__file__).resolve().parents[1] / "systemd" / "xray.service").read_text()
+        self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", xray_unit)
+        self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", xray_unit)
 
 
 if __name__ == "__main__":

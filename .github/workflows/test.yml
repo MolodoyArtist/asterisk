@@ -22,7 +22,7 @@ jobs:
           ruff check src tests
           bandit -q -r src
       - name: Check shell syntax
-        run: bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh scripts/update.sh scripts/update-smoke.sh
+        run: bash -n install.sh scripts/*.sh
       - name: Install integration dependencies
         run: sudo apt-get update && sudo apt-get install -y nginx ripgrep shellcheck
       - name: Lint shell scripts
