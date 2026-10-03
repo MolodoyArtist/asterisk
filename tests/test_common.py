@@ -15,9 +15,9 @@ from vpnctl.agent import (
     action_domain_add,
     action_ip_disable,
     action_reset_password,
-    action_telegram_status,
     action_telegram_enable,
     action_telegram_rotate,
+    action_telegram_status,
     check_domain,
     dispatch,
 )
