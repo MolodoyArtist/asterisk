@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
-
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/xray.sh
 source "${ROOT}/scripts/xray.sh"
+
+# This validates the Linux distribution that the appliance actually installs.
+# Treat a developer workstation on another platform as an explicit skip rather
+# than a false product failure after downloading an un-runnable binary.
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+  printf 'integration smoke skipped: requires Linux x86_64\n'
+  exit 0
+fi
+
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-smoke.XXXXXX)"
-IP_CERT_DIR=/etc/letsencrypt/live/192.0.2.10
-DOMAIN_CERT_DIR=/etc/letsencrypt/live/access.example.com
+CERT_LIVE_DIR="${TEMP_DIR}/letsencrypt/live"
+IP_CERT_DIR="${CERT_LIVE_DIR}/192.0.2.10"
+DOMAIN_CERT_DIR="${CERT_LIVE_DIR}/access.example.com"
 
 cleanup() {
-  rm -rf -- "${TEMP_DIR}" "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"
+  rm -rf -- "${TEMP_DIR}"
 }
 trap cleanup EXIT
-
-[[ ! -e "${IP_CERT_DIR}" && ! -e "${DOMAIN_CERT_DIR}" ]] || {
-  echo 'documentation certificate paths unexpectedly exist' >&2
-  exit 1
-}
 
 archive="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
 printf 'Downloading pinned Xray archive\n'
@@ -54,6 +57,7 @@ fi
 printf 'Rendering test configurations\n'
 VPNCTL_CONFIG_DIR="${TEMP_DIR}/config" \
 VPNCTL_NGINX_SITE="${TEMP_DIR}/vpnctl.nginx" \
+VPNCTL_CERT_LIVE_DIR="${CERT_LIVE_DIR}" \
 VPNCTL_SMOKE_DIR="${TEMP_DIR}" \
 VPNCTL_REALITY_PRIVATE_KEY="${reality_private_key}" \
 VPNCTL_REALITY_PUBLIC_KEY="${reality_public_key}" \

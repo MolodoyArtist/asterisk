@@ -38,7 +38,7 @@ already hosts websites.
 Connect to the VPS over SSH and run:
 
 ```bash
-curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.5/vpnctl-bootstrap-v0.2.5.sh | sudo bash
+curl -fsSL https://github.com/MolodoyArtist/asterisk/releases/download/v0.2.6/vpnctl-bootstrap-v0.2.6.sh | sudo bash
 ```
 
 Do not replace the release tag with `main`. The bootstrap contains the expected
@@ -100,7 +100,8 @@ certificate issuance.
    FreeDNS, deSEC, and Cloudflare DNS.
 3. Create an A record using the value displayed by the portal.
 4. Wait for DNS propagation and select **Check DNS**.
-5. Issue the certificate and activate the domain.
+5. Issue the certificate and activate the domain. The browser then moves to
+   `https://YOUR_DOMAIN:8443/`; sign in there again.
 6. On **Devices**, import and test the additional XHTTP + TLS link.
 
 The recommended REALITY profile remains available on TCP/443. The domain profile
@@ -140,7 +141,8 @@ the primary profiles. The portal displays a `tg://` import link and QR code.
 
 The implementation is built from a checksum-pinned archive of Telegram's
 official MTProxy source only when the feature is enabled. Its Telegram routing
-configuration refreshes daily. The public link requests MTProxy random padding
+configuration refreshes daily and restarts MTProxy only when that upstream data
+actually changes. The public link requests MTProxy random padding
 using the `dd` prefix. Rotate the link if it is disclosed; all devices using the
 old Telegram link will immediately stop working. Disable stops the service and
 its timer; the primary VLESS profiles remain unchanged.
@@ -164,8 +166,8 @@ sudo rm /root/vpnctl-install.json
 
 - Xray REALITY listens directly on TCP/443; the XHTTP inbound is loopback-only
   and exists only after a domain is added. SSH, HTTP, TCP/443 and TCP/8443 are
-  externally reachable. TCP/8444 is opened only after enabling the optional
-  Telegram profile; MTProxy statistics remain loopback-only.
+  externally reachable. The MTProxy listener on TCP/8444 starts only after
+  enabling the optional Telegram profile; MTProxy statistics remain loopback-only.
 - HTTP serves ACME validation only; the portal never accepts credentials over HTTP.
 - Unknown Host/SNI values and an invalid XHTTP path receive a normal 404.
 - Access logs for the portal and XHTTP are disabled.
@@ -183,13 +185,19 @@ delete that device in the portal and create a replacement.
 
 ## REALITY target
 
-The installer tests a small candidate set from the VPS and uses the first
-reachable target; it does not hard-code a single global SNI. The chosen name is
-used both as SNI in the connection URI and as the REALITY target. You can set a
-specific target at first installation with `VPNCTL_REALITY_TARGET=hostname`, or
-replace the candidate list with `VPNCTL_REALITY_TARGETS=name1,name2`. Use a
-stable public HTTPS hostname verified from that VPS. Updates preserve existing
-profiles and do not silently change their target or client links.
+The installer checks a small candidate set from the VPS, validates its TLS
+handshake and compares its IPv4 origin ASN to the VPS ASN through Team Cymru's
+DNS mapping service. It prefers a same-AS candidate, rejects a direct
+Cloudflare-AS candidate, then uses a tested fallback only with a clear console
+warning. There is no reliable generic way to discover a same-AS HTTPS hostname
+for every provider, so a fallback is not presented as ideal camouflage.
+
+The chosen name is used both as SNI in the connection URI and as the REALITY
+target. An advanced user can set a reviewed target at first installation with
+`VPNCTL_REALITY_TARGET=hostname`, or replace the candidate list with
+`VPNCTL_REALITY_TARGETS=name1,name2`. Use a stable public HTTPS hostname
+verified from that VPS. Updates preserve existing profiles and never silently
+change their target or client links.
 
 See [SECURITY.md](SECURITY.md) for scope assumptions and vulnerability-reporting
 guidance.

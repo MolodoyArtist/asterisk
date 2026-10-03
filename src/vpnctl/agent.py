@@ -51,11 +51,9 @@ SYSTEMCTL_BIN = os.environ.get("VPNCTL_SYSTEMCTL_BIN", "/usr/bin/systemctl")
 OPENSSL_BIN = os.environ.get("VPNCTL_OPENSSL_BIN", "/usr/bin/openssl")
 NGINX_BIN = os.environ.get("VPNCTL_NGINX_BIN", "/usr/sbin/nginx")
 SS_BIN = os.environ.get("VPNCTL_SS_BIN", "/usr/bin/ss")
+IP_BIN = os.environ.get("VPNCTL_IP_BIN", "/usr/sbin/ip")
 JOURNALCTL_BIN = os.environ.get("VPNCTL_JOURNALCTL_BIN", "/usr/bin/journalctl")
 QRENCODE_BIN = os.environ.get("VPNCTL_QRENCODE_BIN", "/usr/bin/qrencode")
-MTPROXY_SCRIPT = os.environ.get("VPNCTL_MTPROXY_SCRIPT", "/usr/local/lib/vpnctl/mtproxy")
-MTPROXY_ENV = Path(os.environ.get("VPNCTL_MTPROXY_ENV", "/etc/mtproxy/vpnctl.env"))
-UFW_BIN = os.environ.get("VPNCTL_UFW_BIN", "/usr/sbin/ufw")
 LOCK = threading.RLock()
 
 # Subprocess calls use fixed argument vectors for local system tools; shell mode is never used.
@@ -230,7 +228,7 @@ def action_status(_: dict[str, Any]) -> dict[str, Any]:
         certs.append(certificate_info(state["domain"]))
     metrics = system_metrics()
     return {
-        "services": {"xray": service_active("xray"), "nginx": service_active("nginx"), "panel": service_active("vpnctl-web"), "telegram": not state.get("telegram", {}).get("enabled") or service_active("mtproxy")},
+        "services": {"xray": service_active("xray"), "nginx": service_active("nginx"), "panel": service_active("vpnctl-web")},
         "metrics": metrics,
         "checks": {
             "memory": metrics["memory_available"] >= 64 * 1024 * 1024,
@@ -322,21 +320,43 @@ def _qr_png(value: str) -> dict[str, Any]:
     return {"png": base64.b64encode(result.stdout).decode("ascii")}
 
 
-def _write_mtproxy_env(state: dict[str, Any]) -> None:
-    telegram = state["telegram"]
-    atomic_write(MTPROXY_ENV, f"MTPROXY_PORT={telegram['port']}\nMTPROXY_SECRET={telegram['secret']}\n", 0o640)
+def _mtproxy_unit(name: str, timeout: int = 90) -> None:
+    result = run([SYSTEMCTL_BIN, "start", name], timeout)
+    if result.returncode != 0:
+        raise AgentError("Telegram proxy setup failed. The primary proxy was not changed.")
+
+
+def _port_is_busy(port: int) -> bool:
+    result = run([SS_BIN, "-H", "-ltn", f"sport = :{port}"], 10)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _mtproxy_nat_info(public_ip: str) -> str | None:
+    """Return MTProxy's local:public mapping only when this VPS is behind NAT."""
+    # This documentation address is only used to ask the kernel which default
+    # IPv4 source it would select; no packet is sent.
+    result = run([IP_BIN, "-o", "-4", "route", "get", "192.0.2.1"], 10)
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
     try:
-        shutil.chown(MTPROXY_ENV, user="root", group="mtproxy")
-    except LookupError:
-        pass
+        local_ip = fields[fields.index("src") + 1]
+        local = ipaddress.IPv4Address(local_ip)
+        public = ipaddress.IPv4Address(public_ip)
+    except (ValueError, IndexError):
+        return None
+    return f"{local}:{public}" if local != public else None
 
 
 def action_telegram_status(_: dict[str, Any]) -> dict[str, Any]:
     state = load_state()
     telegram = state.get("telegram", {})
-    result = {"enabled": bool(telegram.get("enabled")), "active": service_active("mtproxy") if telegram.get("enabled") else False}
+    available = os.uname().machine == "x86_64"
+    result = {"enabled": bool(telegram.get("enabled")), "active": service_active("mtproxy") if telegram.get("enabled") else False, "available": available}
+    if not available:
+        result["unavailable_reason"] = "The optional official Telegram MTProxy build currently requires an x86_64 VPS."
     if telegram.get("enabled"):
-        result.update({"port": telegram["port"], "uri": telegram_uri(state)})
+        result.update({"port": telegram["port"], "uri": telegram_uri(state), "nat_mode": "configured" if _mtproxy_nat_info(state["public_ip"]) else "direct"})
     return result
 
 
@@ -345,31 +365,26 @@ def action_telegram_enable(_: dict[str, Any]) -> dict[str, Any]:
         state = load_state()
         if state.get("telegram", {}).get("enabled"):
             return action_telegram_status({})
-        prepared = run([MTPROXY_SCRIPT, "prepare"], 600)
-        if prepared.returncode != 0:
-            raise AgentError("Telegram proxy installation failed. The primary proxy was not changed.")
-        refreshed = run([MTPROXY_SCRIPT, "refresh"], 120)
-        if refreshed.returncode != 0:
-            raise AgentError("Telegram proxy configuration could not be fetched. The primary proxy was not changed.")
+        if os.uname().machine != "x86_64":
+            raise AgentError("The optional official Telegram MTProxy build currently requires an x86_64 VPS.")
+        if _port_is_busy(8444):
+            raise AgentError("TCP port 8444 is already in use. Choose another server or free the port before enabling Telegram.")
         updated = json.loads(json.dumps(state))
         updated["telegram"] = {"enabled": True, "port": 8444, "secret": os.urandom(16).hex(), "enabled_at": int(time.time())}
         validate_state(updated)
-        _write_mtproxy_env(updated)
-        firewall = run([UFW_BIN, "allow", "8444/tcp", "comment", "Optional Telegram MTProxy"], 30)
-        if firewall.returncode != 0:
-            raise AgentError("Firewall could not open the Telegram proxy port. The primary proxy was not changed.")
-        run([SYSTEMCTL_BIN, "daemon-reload"], 20)
+        save_state(updated)
+        try:
+            _mtproxy_unit("vpnctl-mtproxy-provision.service", 900)
+        except AgentError:
+            save_state(state)
+            run([SYSTEMCTL_BIN, "start", "vpnctl-mtproxy-cleanup.service"], 60)
+            raise
         started = run([SYSTEMCTL_BIN, "enable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
         if started.returncode != 0:
             run([SYSTEMCTL_BIN, "disable", "--now", "mtproxy", "mtproxy-refresh.timer"], 30)
-            MTPROXY_ENV.unlink(missing_ok=True)
+            save_state(state)
+            run([SYSTEMCTL_BIN, "start", "vpnctl-mtproxy-cleanup.service"], 60)
             raise AgentError("Telegram proxy did not start. The primary proxy was not changed.")
-        try:
-            save_state(updated)
-        except OSError as exc:
-            run([SYSTEMCTL_BIN, "disable", "--now", "mtproxy", "mtproxy-refresh.timer"], 30)
-            MTPROXY_ENV.unlink(missing_ok=True)
-            raise AgentError("Telegram proxy settings could not be saved. The service was stopped.") from exc
         return {"enabled": True, "port": 8444, "uri": telegram_uri(updated)}
 
 
@@ -388,7 +403,12 @@ def action_telegram_disable(_: dict[str, Any]) -> dict[str, Any]:
         except OSError as exc:
             run([SYSTEMCTL_BIN, "enable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
             raise AgentError("Telegram proxy settings could not be saved. The service was restored.") from exc
-        MTPROXY_ENV.unlink(missing_ok=True)
+        try:
+            _mtproxy_unit("vpnctl-mtproxy-cleanup.service", 60)
+        except AgentError:
+            save_state(state)
+            run([SYSTEMCTL_BIN, "enable", "--now", "mtproxy", "mtproxy-refresh.timer"], 60)
+            raise
         return {"enabled": False}
 
 
@@ -399,18 +419,19 @@ def action_telegram_rotate(_: dict[str, Any]) -> dict[str, Any]:
             raise AgentError("Enable the Telegram proxy first.")
         updated = json.loads(json.dumps(state))
         updated["telegram"]["secret"] = os.urandom(16).hex()
-        _write_mtproxy_env(updated)
+        save_state(updated)
+        try:
+            _mtproxy_unit("vpnctl-mtproxy-configure.service", 60)
+        except AgentError:
+            save_state(state)
+            _mtproxy_unit("vpnctl-mtproxy-configure.service", 60)
+            raise
         restarted = run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
         if restarted.returncode != 0:
-            _write_mtproxy_env(state)
+            save_state(state)
+            _mtproxy_unit("vpnctl-mtproxy-configure.service", 60)
             run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
             raise AgentError("Telegram proxy restart failed. The previous secret was restored.")
-        try:
-            save_state(updated)
-        except OSError as exc:
-            _write_mtproxy_env(state)
-            run([SYSTEMCTL_BIN, "restart", "mtproxy"], 60)
-            raise AgentError("Telegram proxy settings could not be saved. The previous secret was restored.") from exc
         return {"uri": telegram_uri(updated)}
 
 

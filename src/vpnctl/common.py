@@ -24,6 +24,9 @@ XRAY_CONFIG = CONFIG_DIR / "xray.json"
 NGINX_SITE = Path(os.environ.get("VPNCTL_NGINX_SITE", "/etc/nginx/sites-available/vpnctl"))
 DEFAULT_CERT = CONFIG_DIR / "tls" / "default.crt"
 DEFAULT_KEY = CONFIG_DIR / "tls" / "default.key"
+# Keeping this configurable makes the rendered configuration testable without
+# creating anything under /etc. Production retains Certbot's standard path.
+CERT_LIVE_DIR = Path(os.environ.get("VPNCTL_CERT_LIVE_DIR", "/etc/letsencrypt/live"))
 PANEL_PORT = 8443
 MTPROXY_PORT = 8444
 
@@ -273,8 +276,8 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
     server_tokens off;
     access_log off;
     error_log /dev/null crit;
-    ssl_certificate /etc/letsencrypt/live/{cert_name}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{cert_name}/privkey.pem;
+    ssl_certificate {CERT_LIVE_DIR}/{cert_name}/fullchain.pem;
+    ssl_certificate_key {CERT_LIVE_DIR}/{cert_name}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 {guard}{xhttp}    location = /login {{
         client_max_body_size 16k;
@@ -284,6 +287,8 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
     }}
     location / {{
         client_max_body_size 16k;
@@ -292,6 +297,8 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
         proxy_intercept_errors on;
         error_page 404 = @not_found;
     }}
@@ -336,11 +343,12 @@ def render_nginx(state: dict[str, Any]) -> str:
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\w:])")
 UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b")
-URI_SECRET_RE = re.compile(r"vless://[^\s<]+", re.IGNORECASE)
+URI_SECRET_RE = re.compile(r"(?:vless|tg)://[^\s<]+", re.IGNORECASE)
+MTPROXY_SECRET_RE = re.compile(r"\b(?:MTPROXY_SECRET|secret)=[0-9a-f]{32}\b", re.IGNORECASE)
 
 
 def redact_log(text: str) -> str:
-    return IPV6_RE.sub("[REDACTED_IP]", IPV4_RE.sub("[REDACTED_IP]", UUID_RE.sub("[REDACTED_UUID]", URI_SECRET_RE.sub("[REDACTED_URI]", text))))
+    return IPV6_RE.sub("[REDACTED_IP]", IPV4_RE.sub("[REDACTED_IP]", UUID_RE.sub("[REDACTED_UUID]", MTPROXY_SECRET_RE.sub("[REDACTED_SECRET]", URI_SECRET_RE.sub("[REDACTED_URI]", text)))))
 
 
 def h(value: Any) -> str:

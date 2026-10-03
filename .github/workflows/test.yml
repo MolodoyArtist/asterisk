@@ -23,6 +23,8 @@ jobs:
           bandit -q -r src
       - name: Check shell syntax
         run: bash -n install.sh scripts/*.sh scripts/mtproxy-run
+      - name: Test REALITY target selection
+        run: bash scripts/reality-target-smoke.sh
       - name: Install integration dependencies
         run: sudo apt-get update && sudo apt-get install -y nginx ripgrep shellcheck
       - name: Lint shell scripts

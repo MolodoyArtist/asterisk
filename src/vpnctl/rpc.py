@@ -13,7 +13,7 @@ class RPCError(RuntimeError):
     pass
 
 
-def call(action: str, payload: dict[str, Any] | None = None, timeout: int = 310) -> dict[str, Any]:
+def call(action: str, payload: dict[str, Any] | None = None, timeout: int = 900) -> dict[str, Any]:
     request = json.dumps({"action": action, "payload": payload or {}}, separators=(",", ":")) + "\n"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:

@@ -53,7 +53,7 @@ fi
 log "Installing operating-system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl iproute2 nginx openssl python3 qrencode snapd unzip ufw
+apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 nginx openssl python3 qrencode snapd unzip ufw
 
 log "Installing current Certbot"
 systemctl enable --now snapd.socket
@@ -66,24 +66,11 @@ grep -q -- '--ip-address' "${TEMP_DIR}/certbot-help.txt" || die "Installed Certb
 
 # shellcheck source=scripts/xray.sh
 source "${SOURCE_DIR}/scripts/xray.sh"
+# shellcheck source=scripts/reality-target.sh
+source "${SOURCE_DIR}/scripts/reality-target.sh"
 log "Installing pinned Xray ${XRAY_VERSION}"
 xray_stage "${TEMP_DIR}/xray" || die "Could not stage the verified Xray release."
 xray_install_stage "${TEMP_DIR}/xray" /usr/local/bin/xray /usr/local/share/xray
-
-log "Selecting a tested REALITY camouflage target"
-if [[ -z "${REALITY_TARGET}" ]]; then
-  IFS=',' read -r -a TARGET_CANDIDATES <<<"${REALITY_TARGETS}"
-  for candidate in "${TARGET_CANDIDATES[@]}"; do
-    candidate="${candidate//[[:space:]]/}"
-    [[ -n "${candidate}" ]] || continue
-    if /usr/local/bin/xray tls ping "${candidate}" >/dev/null 2>&1; then
-      REALITY_TARGET="${candidate}"
-      break
-    fi
-  done
-fi
-[[ -n "${REALITY_TARGET}" ]] || die "No tested REALITY target is reachable. Set VPNCTL_REALITY_TARGET=hostname and try again."
-printf 'Camouflage target selected: %s\n' "${REALITY_TARGET}"
 
 log "Creating restricted service accounts"
 getent group xray >/dev/null || groupadd --system xray
@@ -105,6 +92,7 @@ install -m 0644 "${SOURCE_DIR}"/systemd/*.service "${SOURCE_DIR}"/systemd/*.time
 install -d -o root -g root -m 0755 /usr/local/lib/vpnctl
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy.sh" /usr/local/lib/vpnctl/mtproxy
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy-run" /usr/local/lib/vpnctl/mtproxy-run
+install -m 0644 "${SOURCE_DIR}/ufw/vpnctl-mtproxy" /etc/ufw/applications.d/vpnctl-mtproxy
 cat >/usr/local/bin/vpnctl <<'EOF'
 #!/usr/bin/env bash
 export PYTHONPATH=/opt/vpnctl/src
@@ -136,6 +124,25 @@ PY
   else
     printf 'Detected public IPv6: %s\n' "${PUBLIC_IPV6}"
   fi
+fi
+
+log "Selecting a tested REALITY camouflage target"
+if [[ -z "${REALITY_TARGET}" ]]; then
+  reality_select_target "${PUBLIC_IP}" "${REALITY_TARGETS}" /usr/local/bin/xray || \
+    die "No tested non-Cloudflare REALITY target is reachable. Set VPNCTL_REALITY_TARGET=hostname and try again."
+  REALITY_TARGET="${REALITY_SELECTED_TARGET}"
+else
+  /usr/local/bin/xray tls ping "${REALITY_TARGET}" >/dev/null 2>&1 || die "The selected REALITY target did not complete a TLS check."
+  REALITY_SERVER_ASN="$(reality_ipv4_asn "${PUBLIC_IP}" || true)"
+  REALITY_TARGET_ASN="$(reality_target_asn "${REALITY_TARGET}" || true)"
+  REALITY_TARGET_MODE=custom
+fi
+printf 'Camouflage target selected: %s (mode: %s, VPS ASN: %s, target ASN: %s)\n' \
+  "${REALITY_TARGET}" "${REALITY_TARGET_MODE:-unknown}" "${REALITY_SERVER_ASN:-unknown}" "${REALITY_TARGET_ASN:-unknown}"
+if [[ "${REALITY_TARGET_MODE:-}" == fallback ]]; then
+  printf '%s\n' 'Warning: no same-AS target was found. A tested non-Cloudflare fallback was selected; set VPNCTL_REALITY_TARGET to use your own reviewed target.' >&2
+elif [[ "${REALITY_TARGET_MODE:-}" == custom && "${REALITY_TARGET_ASN:-}" == 13335 ]]; then
+  printf '%s\n' 'Warning: the custom target resolves to Cloudflare ASN 13335; failed REALITY authentication is forwarded to that target.' >&2
 fi
 
 # Open validation and HTTPS before asking the CA to reach the machine. Preserve
