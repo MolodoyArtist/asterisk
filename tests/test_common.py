@@ -127,6 +127,7 @@ class CommonTests(unittest.TestCase):
         self.assertIn("server_name access.example.com", config)
         self.assertIn("server_name _;", config)
         self.assertEqual(config.count("listen 8443 ssl http2 default_server"), 1)
+        self.assertIn("/etc/letsencrypt/live/access.example.com/fullchain.pem", config)
 
     def test_redaction(self):
         value = "from 192.0.2.10 id 00000000-0000-4000-8000-000000000001 vless://secret@example.com tg://proxy?secret=secret MTPROXY_SECRET=0123456789abcdef0123456789abcdef"
