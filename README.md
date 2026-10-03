@@ -185,13 +185,19 @@ delete that device in the portal and create a replacement.
 
 ## REALITY target
 
-The installer tests a small candidate set from the VPS and uses the first
-reachable target; it does not hard-code a single global SNI. The chosen name is
-used both as SNI in the connection URI and as the REALITY target. You can set a
-specific target at first installation with `VPNCTL_REALITY_TARGET=hostname`, or
-replace the candidate list with `VPNCTL_REALITY_TARGETS=name1,name2`. Use a
-stable public HTTPS hostname verified from that VPS. Updates preserve existing
-profiles and do not silently change their target or client links.
+The installer checks a small candidate set from the VPS, validates its TLS
+handshake and compares its IPv4 origin ASN to the VPS ASN through Team Cymru's
+DNS mapping service. It prefers a same-AS candidate, rejects a direct
+Cloudflare-AS candidate, then uses a tested fallback only with a clear console
+warning. There is no reliable generic way to discover a same-AS HTTPS hostname
+for every provider, so a fallback is not presented as ideal camouflage.
+
+The chosen name is used both as SNI in the connection URI and as the REALITY
+target. An advanced user can set a reviewed target at first installation with
+`VPNCTL_REALITY_TARGET=hostname`, or replace the candidate list with
+`VPNCTL_REALITY_TARGETS=name1,name2`. Use a stable public HTTPS hostname
+verified from that VPS. Updates preserve existing profiles and never silently
+change their target or client links.
 
 See [SECURITY.md](SECURITY.md) for scope assumptions and vulnerability-reporting
 guidance.

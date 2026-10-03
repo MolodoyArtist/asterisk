@@ -343,6 +343,12 @@ class CommonTests(unittest.TestCase):
         self.assertIn("cmp -s", helper)
         self.assertIn("try-restart mtproxy.service", helper)
 
+    def test_reality_target_selector_has_same_asn_and_cloudflare_guards(self):
+        selector = (Path(__file__).resolve().parents[1] / "scripts" / "reality-target.sh").read_text()
+        self.assertIn("REALITY_TARGET_MODE=same-asn", selector)
+        self.assertIn('candidate_asn}" == 13335', selector)
+        self.assertIn("tls ping", selector)
+
 
 if __name__ == "__main__":
     unittest.main()
