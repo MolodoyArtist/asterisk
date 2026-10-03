@@ -21,13 +21,13 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -v
           python3 -m compileall -q src
-          bash -n install.sh scripts/*.sh
+          bash -n install.sh scripts/*.sh scripts/mtproxy-run
           bash scripts/check-repository.sh
       - name: Run privileged smoke tests
         run: |
           sudo apt-get update
           sudo apt-get install -y nginx ripgrep shellcheck
-          shellcheck install.sh scripts/*.sh
+          shellcheck install.sh scripts/*.sh scripts/mtproxy-run
           sudo bash scripts/integration-smoke.sh
           sudo bash scripts/update-smoke.sh
       - name: Build release archive and verified bootstrap
