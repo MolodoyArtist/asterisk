@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-trap 'status=$?; printf "integration smoke failed at line %s (exit %s)\n" "$LINENO" "$status" >&2; exit "$status"' ERR
+on_error() {
+  local status=$?
+  printf 'integration smoke failed at line %s (exit %s)\n' "$LINENO" "${status}" >&2
+  exit "${status}"
+}
+trap on_error ERR
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 
