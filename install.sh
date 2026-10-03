@@ -219,8 +219,8 @@ chmod 0644 /etc/vpnctl/tls/default.crt
 
 log "Generating REALITY credentials"
 REALITY_KEYS="$(/usr/local/bin/xray x25519)"
-REALITY_PRIVATE_KEY="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${REALITY_KEYS}")"
-REALITY_PUBLIC_KEY="$(awk -F': ' '/^(Public key|Password):/{print $2; exit}' <<<"${REALITY_KEYS}")"
+REALITY_PRIVATE_KEY="$(awk -F': ' '/^Private( key|Key):/{print $2; exit}' <<<"${REALITY_KEYS}")"
+REALITY_PUBLIC_KEY="$(awk -F': ' '/^(Public key|Password)( \(PublicKey\))?:/{print $2; exit}' <<<"${REALITY_KEYS}")"
 [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] || die "Could not generate REALITY keys."
 REALITY_SHORT_ID="$(openssl rand -hex 8)"
 PYTHONPATH="${INSTALL_DIR}/src" /usr/bin/python3 - "${REALITY_TARGET}" <<'PY'

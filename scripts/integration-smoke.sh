@@ -44,8 +44,8 @@ if ! reality_keys="$("${TEMP_DIR}/xray/xray" x25519 2>&1)"; then
   printf 'Xray key generation failed: %s\n' "${reality_keys}" >&2
   exit 1
 fi
-reality_private_key="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${reality_keys}")"
-reality_public_key="$(awk -F': ' '/^(Public key|Password):/{print $2; exit}' <<<"${reality_keys}")"
+reality_private_key="$(awk -F': ' '/^Private( key|Key):/{print $2; exit}' <<<"${reality_keys}")"
+reality_public_key="$(awk -F': ' '/^(Public key|Password)( \(PublicKey\))?:/{print $2; exit}' <<<"${reality_keys}")"
 if [[ -z "${reality_private_key}" || -z "${reality_public_key}" ]]; then
   printf 'Unrecognized Xray x25519 output: %s\n' "$(sed -E 's/: .*/: [redacted]/' <<<"${reality_keys}" | tr '\n' ';')" >&2
   exit 1
