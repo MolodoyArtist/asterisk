@@ -21,10 +21,13 @@ trap cleanup EXIT
 }
 
 archive="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+printf 'Downloading pinned Xray archive\n'
 curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}" -o "${TEMP_DIR}/xray.zip"
+printf 'Verifying Xray archive\n'
 expected="$(xray_sha256 64)"
 actual="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
 [[ "${actual}" == "${expected}" ]] || { echo 'Xray archive checksum mismatch.' >&2; exit 1; }
+printf 'Unpacking Xray archive\n'
 unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
 
 mkdir -p "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"
