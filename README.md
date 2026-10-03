@@ -141,7 +141,8 @@ the primary profiles. The portal displays a `tg://` import link and QR code.
 
 The implementation is built from a checksum-pinned archive of Telegram's
 official MTProxy source only when the feature is enabled. Its Telegram routing
-configuration refreshes daily. The public link requests MTProxy random padding
+configuration refreshes daily and restarts MTProxy only when that upstream data
+actually changes. The public link requests MTProxy random padding
 using the `dd` prefix. Rotate the link if it is disclosed; all devices using the
 old Telegram link will immediately stop working. Disable stops the service and
 its timer; the primary VLESS profiles remain unchanged.

@@ -325,7 +325,10 @@ class CommonTests(unittest.TestCase):
         self.assertNotIn("443", mtproxy_unit)
         self.assertIn("ProtectProc=invisible", mtproxy_unit)
         refresh_unit = (Path(__file__).resolve().parents[1] / "systemd" / "mtproxy-refresh.service").read_text()
-        self.assertIn("try-restart mtproxy.service", refresh_unit)
+        helper = (Path(__file__).resolve().parents[1] / "scripts" / "mtproxy.sh").read_text()
+        self.assertIn("refresh-and-restart", refresh_unit)
+        self.assertIn("cmp -s", helper)
+        self.assertIn("try-restart mtproxy.service", helper)
 
 
 if __name__ == "__main__":

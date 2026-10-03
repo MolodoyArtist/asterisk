@@ -54,7 +54,8 @@ prepare() {
 
 refresh() {
   [[ -d "${MTPROXY_ETC}" ]] || exit 0
-  local temporary upstream_key config
+  local temporary upstream_key config changed
+  changed=0
   temporary="$(mktemp -d /tmp/vpnctl-mtproxy-refresh.XXXXXX)"
   trap 'rm -rf -- "${temporary}"' RETURN
   upstream_key="${temporary}/proxy-secret"
@@ -65,8 +66,27 @@ refresh() {
   if [[ "$(wc -c < "${config}")" -lt 100 ]] || ! grep -q '^default ' "${config}" || ! grep -q '^proxy_for ' "${config}"; then
     die "Telegram proxy configuration has an unexpected format."
   fi
-  install -o root -g mtproxy -m 0640 "${upstream_key}" "${MTPROXY_ETC}/proxy-secret"
-  install -o root -g mtproxy -m 0640 "${config}" "${MTPROXY_ETC}/proxy-multi.conf"
+  for source_destination in "${upstream_key}:${MTPROXY_ETC}/proxy-secret" "${config}:${MTPROXY_ETC}/proxy-multi.conf"; do
+    local source destination staged
+    source="${source_destination%%:*}"
+    destination="${source_destination#*:}"
+    if [[ -f "${destination}" ]] && cmp -s "${source}" "${destination}"; then
+      continue
+    fi
+    staged="$(mktemp "${destination}.XXXXXX")"
+    install -o root -g mtproxy -m 0640 "${source}" "${staged}"
+    mv -f "${staged}" "${destination}"
+    changed=1
+  done
+  MTPROXY_REFRESH_CHANGED="${changed}"
+}
+
+refresh_and_restart() {
+  MTPROXY_REFRESH_CHANGED=0
+  refresh
+  if [[ "${MTPROXY_REFRESH_CHANGED}" == 1 ]]; then
+    /usr/bin/systemctl try-restart mtproxy.service
+  fi
 }
 
 configure() {
@@ -111,8 +131,9 @@ cleanup() {
 case "${1:-}" in
   prepare) prepare ;;
   refresh) refresh ;;
+  refresh-and-restart) refresh_and_restart ;;
   configure) configure ;;
   provision) provision ;;
   cleanup) cleanup ;;
-  *) die "Usage: $0 {prepare|refresh|configure|provision|cleanup}" ;;
+  *) die "Usage: $0 {prepare|refresh|refresh-and-restart|configure|provision|cleanup}" ;;
 esac

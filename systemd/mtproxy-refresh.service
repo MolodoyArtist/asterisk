@@ -5,10 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/vpnctl/mtproxy refresh
-# MTProxy reads Telegram's routing file only at startup. Do not leave a newly
-# fetched configuration unused until the next reboot.
-ExecStartPost=/usr/bin/systemctl try-restart mtproxy.service
+# MTProxy reads Telegram's routing file only at startup. The helper restarts it
+# only after atomically replacing changed upstream data.
+ExecStart=/usr/local/lib/vpnctl/mtproxy refresh-and-restart
 User=root
 Group=root
 NoNewPrivileges=true
