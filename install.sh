@@ -22,7 +22,7 @@ case "${VERSION_ID:-}" in 22.04|24.04) ;; *) die "This release supports Ubuntu 2
 exec 9>/run/vpnctl-install.lock
 flock -n 9 || die "Another installation is running."
 
-SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SOURCE_DIR=
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-install.XXXXXX)"
 cleanup() { rm -rf -- "${TEMP_DIR}"; }
 trap cleanup EXIT
