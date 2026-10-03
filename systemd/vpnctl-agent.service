@@ -1,0 +1,25 @@
+[Unit]
+Description=VPN appliance privileged agent
+After=network-online.target nginx.service xray.service
+Requires=nginx.service xray.service
+
+[Service]
+Type=simple
+User=root
+Group=vpnctl
+RuntimeDirectory=vpnctl
+RuntimeDirectoryMode=0750
+Environment=PYTHONPATH=/opt/vpnctl/src
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m vpnctl.agent --serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=true
+ProtectSystem=full
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/etc/vpnctl /etc/nginx/sites-available /var/lib/vpnctl /run/vpnctl /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/www/vpnctl-acme
+
+[Install]
+WantedBy=multi-user.target

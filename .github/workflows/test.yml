@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile Python
+        run: python3 -m compileall -q src
+      - name: Static analysis
+        run: |
+          python3 -m pip install --disable-pip-version-check ruff==0.16.10 bandit==1.9.4
+          ruff check src tests
+          bandit -q -r src
+      - name: Check shell syntax
+        run: bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh
+      - name: Install integration dependencies
+        run: sudo apt-get update && sudo apt-get install -y nginx ripgrep
+      - name: Scan repository
+        run: bash scripts/check-repository.sh
+      - name: Validate generated Nginx and Xray configurations
+        run: sudo bash scripts/integration-smoke.sh

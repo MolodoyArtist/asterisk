@@ -1,0 +1,28 @@
+[Unit]
+Description=Xray proxy core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=xray
+Group=xray
+ExecStart=/usr/local/bin/xray run -config /etc/vpnctl/xray.json
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/vpnctl/xray.json /usr/local/share/xray
+
+[Install]
+WantedBy=multi-user.target

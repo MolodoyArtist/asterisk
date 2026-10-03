@@ -1,0 +1,9 @@
+[Unit]
+Description=VPN appliance health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/opt/vpnctl/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m vpnctl.cli doctor

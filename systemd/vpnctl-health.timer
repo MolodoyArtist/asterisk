@@ -1,0 +1,11 @@
+[Unit]
+Description=Run VPN appliance health check
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,30 @@
+[Unit]
+Description=Account portal
+After=vpnctl-agent.service
+Requires=vpnctl-agent.service
+
+[Service]
+Type=simple
+User=vpnctl
+Group=vpnctl
+Environment=PYTHONPATH=/opt/vpnctl/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m vpnctl.web
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/var/lib/vpnctl
+
+[Install]
+WantedBy=multi-user.target
