@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-on_error() {
-  local status=$?
-  printf 'integration smoke failed at line %s (exit %s)\n' "$LINENO" "${status}" >&2
-  exit "${status}"
-}
-trap on_error ERR
-
 [[ "${EUID}" -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +22,7 @@ version=v26.3.27
 archive="https://github.com/XTLS/Xray-core/releases/download/${version}/Xray-linux-64.zip"
 curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}" -o "${TEMP_DIR}/xray.zip"
 curl --fail --show-error --location --proto '=https' --tlsv1.2 "${archive}.dgst" -o "${TEMP_DIR}/xray.dgst"
-expected="$(awk 'BEGIN{IGNORECASE=1} /SHA2-256/{for(i=1;i<=NF;i++) if($i ~ /^[0-9a-fA-F]{64}$/){print tolower($i); exit}}' "${TEMP_DIR}/xray.dgst")"
+expected="$(awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9a-fA-F]{64}$/){print tolower($i); exit}}' "${TEMP_DIR}/xray.dgst")"
 actual="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
 [[ -n "${expected}" ]] || { echo 'Could not parse the Xray SHA-256 digest.' >&2; exit 1; }
 [[ "${actual}" == "${expected}" ]] || { echo 'Xray archive checksum mismatch.' >&2; exit 1; }
