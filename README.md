@@ -1,105 +1,105 @@
-# vpnctl — прокси на чистой VPS одной командой
+# vpnctl — one-command proxy appliance for a fresh VPS
 
-Самостоятельный VLESS + XHTTP прокси без сторонней панели. Установщик поднимает
-Xray, Nginx, HTTPS и небольшую локальную панель управления. После установки
-готовую ссылку можно импортировать в v2RayTun.
+A self-hosted VLESS + XHTTP proxy with no third-party management panel. The
+installer sets up Xray, Nginx, HTTPS, and a small local control portal. The
+generated connection link can be imported into v2RayTun.
 
-> Проект предназначен для законного доступа к собственным ресурсам и защиты
-> трафика. Соблюдайте законодательство своей страны и правила провайдера VPS.
+> This project is intended for lawful access to your own resources and for
+> protecting network traffic. Follow the laws of your jurisdiction and your VPS
+> provider's terms of service.
 
-## Что получится
+## What you get
 
-- прокси работает сразу после установки;
-- панель открывается по HTTPS на главной странице сервера;
-- случайные логин, пароль, идентификатор устройства и XHTTP-путь;
-- отдельная ссылка и QR-код для каждого устройства;
-- добавление домена через пошаговый мастер в панели;
-- автоматическое обновление сертификатов;
-- метрики, статус служб и очищенные от адресов и секретов журналы;
-- без 3x-ui, базы данных, аналитики и внешних скриптов в браузере.
+- A working proxy as soon as installation finishes.
+- An HTTPS control portal on the server's root page.
+- Random portal credentials, device identifier, and XHTTP path.
+- A separate VLESS link and QR code for every device.
+- A guided domain-addition flow in the portal.
+- Automatic certificate renewal.
+- Service status, local metrics, and logs scrubbed of addresses and secrets.
+- No 3x-ui, database, analytics, or browser-side third-party scripts.
 
-## Требования
+## Requirements
 
-- новая VPS с Ubuntu 22.04 или 24.04;
-- архитектура x86_64 или arm64;
-- публичный IPv4;
-- root-доступ или пользователь с `sudo`;
-- входящие TCP-порты 80 и 443 разрешены в firewall провайдера.
+- A new Ubuntu 22.04 or 24.04 VPS.
+- x86_64 or arm64 architecture.
+- A public IPv4 address.
+- Root access or a user with `sudo`.
+- Inbound TCP ports 80 and 443 allowed by the provider firewall.
 
-Установщик меняет Nginx и UFW, поэтому запускать его следует на новой VPS, а не
-на сервере с уже размещёнными сайтами.
+The installer changes Nginx and UFW. Run it on a new VPS, not on a server that
+already hosts websites.
 
-## Быстрый запуск
+## Quick start
 
-Подключитесь к VPS по SSH и выполните:
+Connect to the VPS over SSH and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MolodoyArtist/asterisk/main/install.sh | sudo bash
 ```
 
-Установщик спросит, есть ли уже домен.
+The installer asks whether you already have a domain.
 
-Повторный запуск той же команды на уже установленной системе выполняет
-безопасное обновление с резервной копией и автоматическим rollback при ошибке.
-Устройства, домен и пароль панели сохраняются.
+Running the same command again on an installed appliance performs a safe update
+with a backup and automatic rollback if an error occurs. Devices, the domain,
+and portal credentials are preserved.
 
-### Вариант 1: домена пока нет
+### Option 1: no domain yet
 
-Ответьте `N` или нажмите Enter. Будет выпущен короткоживущий публичный
-сертификат Let’s Encrypt непосредственно для IP-адреса. Он автоматически
-обновляется, поэтому панель и прокси с самого начала используют доверенный
-HTTPS — логин и пароль не передаются открытым текстом.
+Answer `N` or press Enter. The installer requests a short-lived public IP
+certificate from Let's Encrypt. It renews automatically, so the portal and
+proxy use trusted HTTPS from the first connection: portal credentials are not
+sent in clear text.
 
-Это безопасный транспортный режим, но он менее скрытный: TLS без обычного
-доменного имени заметнее и блокировка единственного IP всё равно остановит
-доступ. Поэтому IP-режим предназначен как стартовый и аварийный, а не как
-полная замена домена.
+This mode is secure transport but less stealthy. TLS without a conventional
+domain is more noticeable, and blocking the VPS IP will still stop access. Use
+IP mode as a starting or recovery path rather than a complete replacement for a
+domain.
 
-После завершения установщик покажет:
+At completion, the installer prints:
 
-- адрес панели;
-- сгенерированные логин и пароль;
-- ссылку VLESS для импорта;
-- QR-код.
+- Portal URL.
+- Generated login and password.
+- VLESS import link.
+- QR code.
 
-Скопируйте ссылку и импортируйте её в v2RayTun из буфера обмена либо
-отсканируйте QR-код в приложении. Затем войдите в панель и откройте раздел
-**Domain**.
+Copy the link into v2RayTun or scan the QR code in the app. Then sign in to the
+portal and open **Domain**.
 
-### Вариант 2: домен уже есть
+### Option 2: you already have a domain
 
-Заранее создайте A-запись домена, направленную на публичный IPv4 VPS. На вопрос
-установщика ответьте `Y` и введите полное имя, например
-`access.example.com`. Установщик проверит DNS и выпустит обычный доменный
-сертификат.
+Before installation, create an A record pointing the domain to the VPS public
+IPv4 address. Answer `Y` when prompted and enter a fully qualified hostname,
+for example `access.example.com`. The installer validates DNS and issues a
+normal domain certificate.
 
-Если DNS обслуживает Cloudflare, запись должна быть в режиме **DNS only**
-(серое облако), иначе проверка намеренно не пройдёт.
+With Cloudflare DNS, the record must be **DNS only** (gray cloud). Otherwise,
+the validation intentionally fails.
 
-AAAA-запись нужна только при наличии рабочего публичного IPv6 на VPS. Неверная
-AAAA-запись может направлять часть пользователей на чужой сервер и мешать
-выпуску сертификата.
+Create an AAAA record only when the VPS has a working public IPv6 address. An
+incorrect AAAA record can send some users to another server and prevent
+certificate issuance.
 
-## Как добавить домен позднее
+## Add a domain later
 
-1. Войдите в панель по IP.
-2. Откройте **Domain**. Там есть пошаговая инструкция и ссылки на No-IP,
-   DuckDNS, FreeDNS, deSEC и Cloudflare DNS.
-3. Создайте A-запись со значением, показанным панелью.
-4. Дождитесь распространения DNS и нажмите **Check DNS**.
-5. Выпустите сертификат и активируйте домен.
-6. На странице **Devices** импортируйте новую доменную ссылку и проверьте её.
-7. Только после проверки нажмите отключение IP-режима.
+1. Sign in to the portal by IP address.
+2. Open **Domain**. It provides a guided flow and links to No-IP, DuckDNS,
+   FreeDNS, deSEC, and Cloudflare DNS.
+3. Create an A record using the value displayed by the portal.
+4. Wait for DNS propagation and select **Check DNS**.
+5. Issue the certificate and activate the domain.
+6. On **Devices**, import and test the new domain link.
+7. Only after testing, disable IP mode.
 
-До последнего шага IP- и доменный профили работают одновременно. Отключение
-IP-режима убирает прямой доступ по IP и прекращает обновление его сертификата.
-Панель переведёт браузер на домен; там потребуется войти ещё раз, поскольку
-защищённые cookie не переносятся между IP-адресом и доменным именем.
+Until the final step, the IP and domain profiles work simultaneously. Disabling
+IP mode removes direct HTTPS access by IP and stops renewal of its certificate.
+The portal then sends the browser to the domain; sign in again because secure
+cookies cannot transfer between an IP address and a hostname.
 
-У бесплатных имён No-IP требуется подтверждение каждые 30 дней. Если его
-пропустить, доменный профиль перестанет открываться.
+Free No-IP hostnames need confirmation every 30 days. Missing that confirmation
+will make the domain profile unavailable.
 
-## Основные команды
+## Core commands
 
 ```bash
 sudo vpnctl status
@@ -113,38 +113,39 @@ sudo vpnctl certificate renew
 sudo vpnctl admin reset-password
 ```
 
-Старый пароль восстановить нельзя. Команда сброса создаёт новый пароль,
-показывает его один раз и завершает существующие веб-сессии.
+The old password cannot be recovered. Resetting it creates a new password,
+prints it once, and invalidates existing portal sessions.
 
-Первичные данные также сохраняются в `/root/vpnctl-install.json` с правами
-только для root. После сохранения реквизитов этот файл рекомендуется удалить:
+Initial credentials are also stored root-only in `/root/vpnctl-install.json`.
+Delete the file after saving the credentials:
 
 ```bash
 sudo rm /root/vpnctl-install.json
 ```
 
-## Безопасность и приватность
+## Security and privacy
 
-- Xray слушает только `127.0.0.1`; снаружи доступны SSH, HTTP и HTTPS.
-- HTTP обслуживает проверку ACME и перенаправляет известный адрес на HTTPS.
-- Неизвестные Host/SNI и неверный XHTTP-путь получают обычный 404.
-- Access-log для панели и XHTTP отключён.
-- Xray не пишет журнал посещений; вывод служб очищается перед показом в панели.
-- Сессия панели подписана, cookie имеет `Secure`, `HttpOnly` и
-  `SameSite=Strict`; изменяющие запросы защищены CSRF-токеном.
-- Вход ограничен по частоте; пароль хранится как `scrypt`-хеш.
-- Доступ к локальным, link-local и cloud-metadata адресам, BitTorrent и
-  исходящему SMTP/25 заблокирован.
-- Один VPS нельзя защитить от блокировки самого IP-адреса.
+- Xray listens only on `127.0.0.1`; SSH, HTTP, and HTTPS are externally
+  reachable.
+- HTTP serves ACME validation and redirects the known endpoint to HTTPS.
+- Unknown Host/SNI values and an invalid XHTTP path receive a normal 404.
+- Access logs for the portal and XHTTP are disabled.
+- Xray does not retain browsing logs; service output is scrubbed before it is
+  shown in the portal.
+- Portal sessions are signed; cookies use `Secure`, `HttpOnly`, and
+  `SameSite=Strict`; state-changing requests require a CSRF token.
+- Login attempts are rate-limited and passwords are stored as `scrypt` hashes.
+- Local, link-local, cloud-metadata, BitTorrent, and outbound SMTP/25 access is
+  blocked.
+- A single VPS cannot be made resilient to blocking of its public IP.
 
-Импортная VLESS-ссылка является секретом. Если устройство потеряно или ссылка
-попала постороннему, удалите соответствующее устройство в панели и создайте
-новое.
+A VLESS import link is a secret. If a device is lost or its link is shared,
+delete that device in the portal and create a replacement.
 
-Дополнительные предположения и порядок сообщения об уязвимостях описаны в
-[SECURITY.md](SECURITY.md).
+See [SECURITY.md](SECURITY.md) for scope assumptions and vulnerability-reporting
+guidance.
 
-## Проверка исходников
+## Validate the source tree
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -153,10 +154,11 @@ bash -n install.sh scripts/check-repository.sh scripts/integration-smoke.sh
 bash scripts/check-repository.sh
 ```
 
-Xray закреплён на проверенной версии, а архив сверяется с SHA-256, опубликованной
-в официальном релизе. Обновление версии выполняется осознанным изменением
-`VPNCTL_XRAY_VERSION`, а не незаметной загрузкой произвольного `latest`.
+Xray is pinned to a reviewed version and its archive is checked against the
+SHA-256 published with the official release. Updating it requires an explicit
+change to `VPNCTL_XRAY_VERSION`; the installer never silently downloads an
+arbitrary `latest` build.
 
-## Лицензия
+## License
 
 [MIT](LICENSE)
