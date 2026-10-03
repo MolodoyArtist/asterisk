@@ -30,6 +30,7 @@ actual="$(sha256sum "${TEMP_DIR}/xray.zip" | awk '{print $1}')"
 printf 'Unpacking Xray archive\n'
 unzip -q "${TEMP_DIR}/xray.zip" -d "${TEMP_DIR}/xray"
 
+printf 'Generating test TLS certificates\n'
 mkdir -p "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"
 for cert_dir in "${IP_CERT_DIR}" "${DOMAIN_CERT_DIR}"; do
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=example' \
@@ -38,11 +39,13 @@ done
 mkdir -p "${TEMP_DIR}/config/tls"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
   -keyout "${TEMP_DIR}/config/tls/default.key" -out "${TEMP_DIR}/config/tls/default.crt" >/dev/null 2>&1
+printf 'Generating REALITY test keys\n'
 reality_keys="$("${TEMP_DIR}/xray/xray" x25519)"
 reality_private_key="$(awk -F': ' '/Private key/{print $2; exit}' <<<"${reality_keys}")"
 reality_public_key="$(awk -F': ' '/Public key/{print $2; exit}' <<<"${reality_keys}")"
 [[ -n "${reality_private_key}" && -n "${reality_public_key}" ]]
 
+printf 'Rendering test configurations\n'
 VPNCTL_CONFIG_DIR="${TEMP_DIR}/config" \
 VPNCTL_NGINX_SITE="${TEMP_DIR}/vpnctl.nginx" \
 VPNCTL_SMOKE_DIR="${TEMP_DIR}" \
