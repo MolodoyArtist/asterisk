@@ -6,6 +6,14 @@ umask 077
 # Runtime-only root-owned file; its values are deliberately not in this tree.
 # shellcheck disable=SC1091
 source /etc/mtproxy/vpnctl.env
+nat_args=()
+if [[ -n "${MTPROXY_NAT_INFO:-}" ]]; then
+  [[ "${MTPROXY_NAT_INFO}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || {
+    printf '%s\n' 'Invalid MTProxy NAT mapping.' >&2
+    exit 1
+  }
+  nat_args=(--nat-info "${MTPROXY_NAT_INFO}")
+fi
 exec /opt/MTProxy/objs/bin/mtproto-proxy \
   -u mtproxy -p 8888 -H "${MTPROXY_PORT}" -S "${MTPROXY_SECRET}" \
-  --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M 1
+  --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M 1 "${nat_args[@]}"

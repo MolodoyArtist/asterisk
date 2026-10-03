@@ -15,6 +15,7 @@ from vpnctl.agent import (
     action_domain_add,
     action_ip_disable,
     action_reset_password,
+    action_telegram_status,
     action_telegram_enable,
     action_telegram_rotate,
     check_domain,
@@ -279,6 +280,18 @@ class CommonTests(unittest.TestCase):
         unit.assert_called_once_with("vpnctl-mtproxy-provision.service", 900)
         self.assertFalse(any("xray" in command or "nginx" in command for command in calls))
         self.assertTrue(save_state.called)
+
+    def test_telegram_status_reports_nat_mapping_without_exposing_addresses(self):
+        state = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})
+        with (
+            mock.patch("vpnctl.agent.load_state", return_value=state),
+            mock.patch("vpnctl.agent.service_active", return_value=True),
+            mock.patch("vpnctl.agent.run", return_value=mock.Mock(returncode=0, stdout="192.0.2.1 via 198.51.100.1 dev eth0 src 198.51.100.7\n")),
+            mock.patch("vpnctl.agent.os.uname", return_value=mock.Mock(machine="x86_64")),
+        ):
+            status = action_telegram_status({})
+        self.assertEqual(status["nat_mode"], "configured")
+        self.assertNotIn("198.51.100.7", str(status))
 
     def test_telegram_rotation_restores_secret_when_restart_fails(self):
         original = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})

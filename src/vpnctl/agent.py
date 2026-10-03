@@ -51,6 +51,7 @@ SYSTEMCTL_BIN = os.environ.get("VPNCTL_SYSTEMCTL_BIN", "/usr/bin/systemctl")
 OPENSSL_BIN = os.environ.get("VPNCTL_OPENSSL_BIN", "/usr/bin/openssl")
 NGINX_BIN = os.environ.get("VPNCTL_NGINX_BIN", "/usr/sbin/nginx")
 SS_BIN = os.environ.get("VPNCTL_SS_BIN", "/usr/bin/ss")
+IP_BIN = os.environ.get("VPNCTL_IP_BIN", "/usr/sbin/ip")
 JOURNALCTL_BIN = os.environ.get("VPNCTL_JOURNALCTL_BIN", "/usr/bin/journalctl")
 QRENCODE_BIN = os.environ.get("VPNCTL_QRENCODE_BIN", "/usr/bin/qrencode")
 LOCK = threading.RLock()
@@ -330,6 +331,23 @@ def _port_is_busy(port: int) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _mtproxy_nat_info(public_ip: str) -> str | None:
+    """Return MTProxy's local:public mapping only when this VPS is behind NAT."""
+    # This documentation address is only used to ask the kernel which default
+    # IPv4 source it would select; no packet is sent.
+    result = run([IP_BIN, "-o", "-4", "route", "get", "192.0.2.1"], 10)
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
+    try:
+        local_ip = fields[fields.index("src") + 1]
+        local = ipaddress.IPv4Address(local_ip)
+        public = ipaddress.IPv4Address(public_ip)
+    except (ValueError, IndexError):
+        return None
+    return f"{local}:{public}" if local != public else None
+
+
 def action_telegram_status(_: dict[str, Any]) -> dict[str, Any]:
     state = load_state()
     telegram = state.get("telegram", {})
@@ -338,7 +356,7 @@ def action_telegram_status(_: dict[str, Any]) -> dict[str, Any]:
     if not available:
         result["unavailable_reason"] = "The optional official Telegram MTProxy build currently requires an x86_64 VPS."
     if telegram.get("enabled"):
-        result.update({"port": telegram["port"], "uri": telegram_uri(state)})
+        result.update({"port": telegram["port"], "uri": telegram_uri(state), "nat_mode": "configured" if _mtproxy_nat_info(state["public_ip"]) else "direct"})
     return result
 
 

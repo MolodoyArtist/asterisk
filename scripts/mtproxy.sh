@@ -92,7 +92,7 @@ refresh_and_restart() {
 configure() {
   [[ -d "${MTPROXY_ETC}" ]] || die "MTProxy is not prepared."
   /usr/bin/python3 - "${STATE_FILE}" "${MTPROXY_ETC}/vpnctl.env" <<'PY'
-import json, os, re, sys, tempfile
+import ipaddress, json, os, re, subprocess, sys, tempfile
 state_path, env_path = sys.argv[1:]
 with open(state_path, encoding="utf-8") as handle:
     state = json.load(handle)
@@ -100,11 +100,24 @@ telegram = state.get("telegram", {})
 port, secret = telegram.get("port"), telegram.get("secret")
 if not telegram.get("enabled") or not isinstance(port, int) or not 1024 <= port <= 65535 or not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{32}", secret):
     raise SystemExit("Telegram proxy state is invalid.")
+public = None
+try:
+    public = ipaddress.IPv4Address(state["public_ip"])
+    route = subprocess.run(["/usr/sbin/ip", "-o", "-4", "route", "get", "192.0.2.1"], text=True, capture_output=True, timeout=10, check=False)
+    fields = route.stdout.split()
+    local = ipaddress.IPv4Address(fields[fields.index("src") + 1]) if route.returncode == 0 else public
+except (KeyError, ValueError, IndexError, OSError, subprocess.TimeoutExpired):
+    if public is None:
+        raise SystemExit("Telegram proxy public address is invalid.")
+    local = public
+nat_info = f"{local}:{public}" if local != public else ""
 fd, temporary = tempfile.mkstemp(prefix=".vpnctl.env.", dir=os.path.dirname(env_path))
 try:
     os.fchmod(fd, 0o640)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(f"MTPROXY_PORT={port}\nMTPROXY_SECRET={secret}\n")
+        if nat_info:
+            handle.write(f"MTPROXY_NAT_INFO={nat_info}\n")
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, env_path)

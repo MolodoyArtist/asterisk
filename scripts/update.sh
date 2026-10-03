@@ -211,6 +211,7 @@ XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" "${XRAY_BIN}" run -test -config "${XRAY_
 log "Restarting services"
 "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web
 if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy; then
+  "${SYSTEMCTL_BIN}" start vpnctl-mtproxy-configure.service
   "${SYSTEMCTL_BIN}" restart mtproxy
 fi
 "${SYSTEMCTL_BIN}" enable --now vpnctl-health.timer
