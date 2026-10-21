@@ -36,7 +36,17 @@ jobs:
         run: shellcheck install.sh scripts/*.sh scripts/mtproxy-run
       - name: Scan repository
         run: bash scripts/check-repository.sh
-      - name: Validate generated Nginx and Xray configurations
-        run: sudo bash scripts/integration-smoke.sh
+      - name: Validate configurations and FakeTLS cover
+        run: |
+          log="${RUNNER_TEMP}/integration.log"
+          if sudo bash scripts/integration-smoke.sh >"${log}" 2>&1; then
+            cat "${log}"
+          else
+            cat "${log}"
+            while IFS= read -r line; do
+              printf '::error title=Integration diagnostics::%s\n' "${line//%/%25}"
+            done < <(tail -n 30 "${log}")
+            exit 1
+          fi
       - name: Validate update and rollback
         run: sudo bash scripts/update-smoke.sh
