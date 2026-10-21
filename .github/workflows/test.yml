@@ -43,9 +43,11 @@ jobs:
             cat "${log}"
           else
             cat "${log}"
-            while IFS= read -r line; do
-              printf '::error title=Integration diagnostics::%s\n' "${line//%/%25}"
-            done < <(tail -n 30 "${log}")
+            details="$(tail -n 30 "${log}")"
+            details="${details//%/%25}"
+            details="${details//$'\r'/%0D}"
+            details="${details//$'\n'/%0A}"
+            printf '::error title=Integration diagnostics::%s\n' "${details}"
             exit 1
           fi
       - name: Validate update and rollback
