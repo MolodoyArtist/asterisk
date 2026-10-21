@@ -177,6 +177,8 @@ def validate_state(state: dict[str, Any]) -> None:
                 raise ValidationError("FakeTLS requires a domain and its dedicated port.")
             if not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{32}", secret):
                 raise ValidationError("Telegram proxy secret is invalid.")
+            if telegram.get("implementation") == "mtg" and secret == "0" * 32:
+                raise ValidationError("FakeTLS requires a non-zero secret.")
 
 
 def telegram_uri(state: dict[str, Any]) -> str:
@@ -294,7 +296,9 @@ def render_xray(state: dict[str, Any]) -> str:
         reality = state["reality"]
         inbounds.append({"port": 443, "protocol": "vless", "settings": {"clients": _clients(state, "xtls-rprx-vision"), "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"show": False, "dest": f"{reality['target']}:443", "xver": 0, "serverNames": [reality["server_name"]], "privateKey": reality["private_key"], "shortIds": [reality["short_id"]]}}, "sniffing": {"enabled": False}})
     if state.get("domain") or state.get("layout", "reality-primary") == "legacy-xhttp-primary":
-        inbounds.append({"listen": "127.0.0.1", "port": 5555, "protocol": "vless", "settings": {"clients": _clients(state), "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "none", "xhttpSettings": {"path": f"/{state['xhttp_path']}/", "mode": "auto"}}, "sniffing": {"enabled": False}})
+        # Xray v26.6.1 expects header names here, not IP ranges. Only local
+        # nginx reaches this listener and it overwrites both forwarded headers.
+        inbounds.append({"listen": "127.0.0.1", "port": 5555, "protocol": "vless", "settings": {"clients": _clients(state), "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "none", "sockopt": {"trustedXForwardedFor": ["X-Vpnctl-Proxy"]}, "xhttpSettings": {"path": f"/{state['xhttp_path']}/", "mode": "auto"}}, "sniffing": {"enabled": False}})
     if domain_mode(state):
         domain = state["domain"]
         # Public QUIC ingress; access is authenticated by a per-device secret.
@@ -339,6 +343,8 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
         proxy_pass http://127.0.0.1:5555;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Vpnctl-Proxy true;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 360s;

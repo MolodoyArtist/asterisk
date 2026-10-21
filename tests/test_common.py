@@ -75,6 +75,7 @@ class CommonTests(unittest.TestCase):
         self.assertEqual([i["protocol"] for i in config["inbounds"]], ["vless", "hysteria"])
         self.assertEqual(config["inbounds"][0]["listen"], "127.0.0.1")
         self.assertEqual(config["inbounds"][0]["port"], 5555)
+        self.assertEqual(config["inbounds"][0]["streamSettings"]["sockopt"]["trustedXForwardedFor"], ["X-Vpnctl-Proxy"])
         hy = config["inbounds"][1]
         self.assertEqual(hy["port"], 443)
         self.assertEqual(hy["settings"]["clients"][0]["auth"], state["clients"][0]["hysteria_password"])
@@ -82,6 +83,8 @@ class CommonTests(unittest.TestCase):
         nginx = render_nginx(state)
         website = nginx[nginx.index("    listen 443 ssl http2;\n"):nginx.index("    listen 9443 ssl http2;\n")]
         self.assertIn("127.0.0.1:5555", website)
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr", website)
+        self.assertIn("proxy_set_header X-Vpnctl-Proxy true", website)
         self.assertNotIn("127.0.0.1:8787", website)
         self.assertNotIn("location = /login", website)
         self.assertIn("Welcome", website)
@@ -107,11 +110,13 @@ class CommonTests(unittest.TestCase):
 
     def test_telegram_faketls_uses_domain_and_rejects_domain_less_setup(self):
         state = domain_state()
-        state["telegram"] = {"enabled": True, "implementation": "mtg", "port": 8443, "secret": "0" * 32}
+        state["telegram"] = {"enabled": True, "implementation": "mtg", "port": 8443, "secret": "1" * 32}
         validate_state(state)
         uri = telegram_uri(state)
         self.assertIn("server=access.example.com", uri)
-        self.assertIn("secret=ee" + "0" * 32 + b"access.example.com".hex(), uri)
+        self.assertIn("secret=ee" + "1" * 32 + b"access.example.com".hex(), uri)
+        with self.assertRaises(ValidationError):
+            validate_state(dict(state, telegram=dict(state["telegram"], secret="0" * 32)))
         with mock.patch("vpnctl.agent.load_state", return_value=STATE), self.assertRaisesRegex(AgentError, "domain profiles"):
             action_telegram_enable({})
 

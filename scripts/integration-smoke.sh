@@ -110,7 +110,7 @@ for name, state in states.items():
 for profile in ("xhttp", "hysteria"):
     state = states["domain"]
     (root / f"client-{profile}.json").write_text(json.dumps(client_config(state, state["clients"][0], profile)))
-state = dict(states["domain"], telegram={"enabled": True, "implementation": "mtg", "port": 8443, "secret": "0" * 32})
+state = dict(states["domain"], telegram={"enabled": True, "implementation": "mtg", "port": 8443, "secret": os.urandom(16).hex()})
 state.pop("reality")
 (root / "state.json").write_text(json.dumps(state))
 PY
