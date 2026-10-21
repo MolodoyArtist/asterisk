@@ -69,10 +69,11 @@ run_update() {
   VPNCTL_XRAY_ASSET_DIR="${case_dir}/assets" \
   VPNCTL_XRAY_STAGE_DIR="${case_dir}/xray-stage" \
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
+  VPNCTL_RENEW_HOOK="${case_dir}/renew-hook" \
   VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
   VPNCTL_HELPER_DIR="${case_dir}/helpers" \
   VPNCTL_UFW_APP_DIR="${case_dir}/ufw-applications" \
-  VPNCTL_PYTHON_BIN=/usr/bin/python3 \
+  VPNCTL_PYTHON_BIN="${VPNCTL_TEST_PYTHON:-/usr/bin/python3}" \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
   VPNCTL_SMOKE_ALLOW_NONROOT=1 bash "${ROOT}/scripts/update.sh"
@@ -86,7 +87,7 @@ printf '%s\n' 'old geosite' >"${success_dir}/assets/geosite.dat"
 run_update "${success_dir}" 0
 [[ ! -e "${success_dir}/install/src/old-version-marker" ]]
 grep -q '^Wants=nginx.service xray.service$' "${success_dir}/systemd/vpnctl-agent.service"
-grep -q '"schema": 2' "${success_dir}/state/state.json"
+grep -q '"schema": 3' "${success_dir}/state/state.json"
 grep -q '"layout": "legacy-xhttp-primary"' "${success_dir}/state/state.json"
 grep -q '00000000-0000-4000-8000-000000000001' "${success_dir}/state/state.json"
 grep -q '^new geoip$' "${success_dir}/assets/geoip.dat"

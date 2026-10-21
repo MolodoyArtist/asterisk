@@ -25,8 +25,10 @@ from vpnctl.common import (
     ValidationError,
     atomic_write,
     b64url,
+    client_config,
     client_uri,
     hash_password,
+    hysteria_uri,
     make_session,
     redact_log,
     render_nginx,
@@ -42,6 +44,7 @@ from vpnctl.migrate import migrate_state
 
 STATE = {
     "public_ip": "192.0.2.10",
+    "panel_port": 8443,
     "public_ipv6": None,
     "domain": None,
     "xhttp_path": "A_random_path_with_enough_entropy",
@@ -56,7 +59,89 @@ STATE = {
 }
 
 
+def domain_state():
+    state = json.loads(json.dumps(STATE))
+    state.update(schema=3, layout="domain-primary", domain="access.example.com", panel_port=9443)
+    state.pop("reality")
+    state["clients"][0]["hysteria_password"] = "a" * 32
+    return state
+
+
 class CommonTests(unittest.TestCase):
+    def test_domain_mode_replaces_reality_and_isolates_cover_site(self):
+        state = domain_state()
+        validate_state(state)
+        config = json.loads(render_xray(state))
+        self.assertEqual([i["protocol"] for i in config["inbounds"]], ["vless", "hysteria"])
+        self.assertEqual(config["inbounds"][0]["listen"], "127.0.0.1")
+        self.assertEqual(config["inbounds"][0]["port"], 5555)
+        hy = config["inbounds"][1]
+        self.assertEqual(hy["port"], 443)
+        self.assertEqual(hy["settings"]["clients"][0]["auth"], state["clients"][0]["hysteria_password"])
+        self.assertEqual(hy["streamSettings"]["tlsSettings"]["alpn"], ["h3"])
+        nginx = render_nginx(state)
+        website = nginx[nginx.index("    listen 443 ssl http2;\n"):nginx.index("    listen 9443 ssl http2;\n")]
+        self.assertIn("127.0.0.1:5555", website)
+        self.assertNotIn("127.0.0.1:8787", website)
+        self.assertNotIn("location = /login", website)
+        self.assertIn("Welcome", website)
+        self.assertNotIn("listen 8443", nginx)
+        with self.assertRaises(ValidationError):
+            client_uri(state, state["clients"][0], "reality")
+        self.assertIn(":443?", client_uri(state, state["clients"][0], "xhttp"))
+
+    def test_private_json_exports_are_per_device_and_validate_transport(self):
+        state = domain_state()
+        client = state["clients"][0]
+        sb = client_config(state, client, "hysteria")
+        self.assertEqual(sb["outbounds"][0]["password"], client["hysteria_password"])
+        self.assertFalse(sb["outbounds"][0]["tls"]["insecure"])
+        self.assertEqual(sb["outbounds"][0]["server"], state["public_ip"])
+        self.assertEqual(sb["dns"]["servers"][0]["detour"], "proxy")
+        xr = client_config(state, client, "xhttp")
+        self.assertEqual(xr["outbounds"][0]["settings"]["vnext"][0]["users"][0]["id"], client["id"])
+        self.assertNotIn(client["hysteria_password"], json.dumps(xr))
+        self.assertIn("sni=access.example.com", hysteria_uri(state, client))
+        with self.assertRaises(ValidationError):
+            client_config(STATE, client, "hysteria")
+
+    def test_telegram_faketls_uses_domain_and_rejects_domain_less_setup(self):
+        state = domain_state()
+        state["telegram"] = {"enabled": True, "implementation": "mtg", "port": 8443, "secret": "0" * 32}
+        validate_state(state)
+        uri = telegram_uri(state)
+        self.assertIn("server=access.example.com", uri)
+        self.assertIn("secret=ee" + "0" * 32 + b"access.example.com".hex(), uri)
+        with mock.patch("vpnctl.agent.load_state", return_value=STATE), self.assertRaisesRegex(AgentError, "domain profiles"):
+            action_telegram_enable({})
+
+    def test_domain_transition_stops_reality_before_nginx_takes_443(self):
+        events = []
+        def run(command, timeout=60):
+            events.append(tuple(command[1:]))
+            return mock.Mock(returncode=0)
+        original = dict(STATE, schema=2)
+        with (
+            mock.patch("vpnctl.agent.load_state", return_value=original),
+            mock.patch("vpnctl.agent.check_domain", return_value={"domain": "access.example.com"}),
+            mock.patch("vpnctl.agent.run", side_effect=run),
+            mock.patch("vpnctl.agent.sync_domain_certificate"),
+            mock.patch("vpnctl.agent.validate_and_install_xray"),
+            mock.patch("vpnctl.agent.install_nginx", side_effect=lambda state: events.append(("nginx",))),
+            mock.patch("vpnctl.agent.wait_for_xray", return_value=True),
+            mock.patch("vpnctl.agent.save_state") as save,
+        ):
+            result = action_domain_add({"domain": "access.example.com"})
+        self.assertTrue(result["hysteria"])
+        self.assertTrue(any("--no-directory-hooks" in command for command in events))
+        self.assertLess(events.index(("stop", "xray")), events.index(("nginx",)))
+        self.assertLess(events.index(("nginx",)), events.index(("start", "xray")))
+        final = save.call_args.args[0]
+        self.assertNotIn("reality", final)
+        self.assertEqual(final["layout"], "domain-primary")
+        self.assertEqual(final["panel_port"], 9443)
+        self.assertIn("hysteria_password", final["clients"][0])
+
     def test_password_hash_and_session(self):
         record = hash_password("a sufficiently long password")
         self.assertTrue(verify_password("a sufficiently long password", record))
@@ -170,7 +255,7 @@ class CommonTests(unittest.TestCase):
         old = dict(STATE, schema=1, domain="access.example.com", ip_mode=True)
         old.pop("reality")
         migrated = migrate_state(old)
-        self.assertEqual(migrated["schema"], 2)
+        self.assertEqual(migrated["schema"], 3)
         self.assertEqual(migrated["clients"], old["clients"])
         self.assertEqual(migrated["domain"], "access.example.com")
         self.assertNotIn("ip_mode", migrated)
@@ -220,6 +305,8 @@ class CommonTests(unittest.TestCase):
             mock.patch("vpnctl.agent.check_domain", return_value={"domain": "access.example.com"}),
             mock.patch("vpnctl.agent.run", return_value=mock.Mock(returncode=0)),
             mock.patch("vpnctl.agent.validate_and_install_xray") as install_xray,
+            mock.patch("vpnctl.agent.sync_domain_certificate"),
+            mock.patch("vpnctl.agent.wait_for_xray", return_value=True),
             mock.patch("vpnctl.agent.install_nginx") as install_nginx,
             mock.patch("vpnctl.agent.save_state", side_effect=OSError("disk full")),
             self.assertRaisesRegex(OSError, "disk full"),
@@ -259,7 +346,7 @@ class CommonTests(unittest.TestCase):
             action_client_qr({"name": "phone"})
 
     def test_telegram_enable_does_not_touch_xray_or_nginx(self):
-        original = dict(STATE, schema=2)
+        original = domain_state()
         calls = []
 
         def fake_run(command, timeout=60):
@@ -276,12 +363,13 @@ class CommonTests(unittest.TestCase):
         ):
             result = action_telegram_enable({})
         self.assertTrue(result["enabled"])
-        self.assertIn("port=8444", result["uri"])
+        self.assertIn("port=8443", result["uri"])
+        self.assertIn("secret=ee", result["uri"])
         unit.assert_called_once_with("vpnctl-mtproxy-provision.service", 900)
         self.assertFalse(any("xray" in command or "nginx" in command for command in calls))
         self.assertTrue(save_state.called)
 
-    def test_telegram_status_reports_nat_mapping_without_exposing_addresses(self):
+    def test_telegram_status_reports_faketls_availability(self):
         state = dict(STATE, schema=2, telegram={"enabled": True, "port": 8444, "secret": "0123456789abcdef0123456789abcdef"})
         with (
             mock.patch("vpnctl.agent.load_state", return_value=state),
@@ -290,7 +378,8 @@ class CommonTests(unittest.TestCase):
             mock.patch("vpnctl.agent.os.uname", return_value=mock.Mock(machine="x86_64")),
         ):
             status = action_telegram_status({})
-        self.assertEqual(status["nat_mode"], "configured")
+        self.assertNotIn("nat_mode", status)
+        self.assertFalse(status["available"])
         self.assertNotIn("198.51.100.7", str(status))
 
     def test_telegram_rotation_restores_secret_when_restart_fails(self):
@@ -307,7 +396,7 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(unit.call_args_list[-1].args, ("vpnctl-mtproxy-configure.service", 60))
 
     def test_telegram_enable_rolls_back_state_and_cleanup_when_provision_fails(self):
-        original = dict(STATE, schema=2)
+        original = domain_state()
         commands = []
 
         def fake_run(command, timeout=60):
@@ -340,8 +429,9 @@ class CommonTests(unittest.TestCase):
         refresh_unit = (Path(__file__).resolve().parents[1] / "systemd" / "mtproxy-refresh.service").read_text()
         helper = (Path(__file__).resolve().parents[1] / "scripts" / "mtproxy.sh").read_text()
         self.assertIn("refresh-and-restart", refresh_unit)
-        self.assertIn("cmp -s", helper)
-        self.assertIn("try-restart mtproxy.service", helper)
+        self.assertIn("sha256sum", helper)
+        self.assertIn("User=mtproxy", mtproxy_unit)
+        self.assertIn("CapabilityBoundingSet=", mtproxy_unit)
 
     def test_reality_target_selector_has_same_asn_and_cloudflare_guards(self):
         selector = (Path(__file__).resolve().parents[1] / "scripts" / "reality-target.sh").read_text()

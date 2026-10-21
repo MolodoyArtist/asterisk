@@ -9,6 +9,7 @@ import uuid
 
 from .common import (
     AUTH_FILE,
+    PANEL_PORT,
     STATE_FILE,
     client_uri,
     hash_password,
@@ -29,10 +30,10 @@ def main() -> None:
     parser.add_argument("--public-ip", required=True)
     parser.add_argument("--public-ipv6")
     parser.add_argument("--domain")
-    parser.add_argument("--reality-target", required=True)
-    parser.add_argument("--reality-private-key", required=True)
-    parser.add_argument("--reality-public-key", required=True)
-    parser.add_argument("--reality-short-id", required=True)
+    parser.add_argument("--reality-target")
+    parser.add_argument("--reality-private-key")
+    parser.add_argument("--reality-public-key")
+    parser.add_argument("--reality-short-id")
     parser.add_argument("--client-name", default="first-device")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -47,8 +48,8 @@ def main() -> None:
         parser.error("--public-ip must be IPv4")
     public_ipv6 = validate_ip(args.public_ipv6) if args.public_ipv6 else None
     domain = validate_domain(args.domain) if args.domain else None
-    reality_target = validate_domain(args.reality_target)
-    if not all((args.reality_private_key, args.reality_public_key)):
+    reality_target = validate_domain(args.reality_target) if args.reality_target else None
+    if not domain and not all((reality_target, args.reality_private_key, args.reality_public_key, args.reality_short_id)):
         parser.error("REALITY keys are required")
     client_name = validate_name(args.client_name)
     username = f"member-{random_token(5).lower()}"
@@ -58,14 +59,16 @@ def main() -> None:
         "id": str(uuid.uuid4()),
         "enabled": True,
         "created_at": int(time.time()),
+        "hysteria_password": random_token(24),
     }
     state = {
-        "schema": 2,
+        "schema": 3,
         "created_at": int(time.time()),
         "public_ip": public_ip,
         "public_ipv6": public_ipv6,
         "domain": domain,
-        "layout": "reality-primary",
+        "layout": "domain-primary" if domain else "reality-primary",
+        "panel_port": PANEL_PORT,
         "xhttp_path": random_token(24),
         "reality": {
             "target": reality_target,
@@ -76,6 +79,8 @@ def main() -> None:
         },
         "clients": [client],
     }
+    if domain:
+        state.pop("reality", None)
     auth = {
         "username": username,
         "password": hash_password(password),
@@ -87,11 +92,11 @@ def main() -> None:
     chown(AUTH_FILE, "vpnctl", "vpnctl")
 
     result = {
-        "panel_url": f"https://{domain or public_ip}:8443/",
+        "panel_url": f"https://{domain or public_ip}:{PANEL_PORT}/",
         "username": username,
         "password": password,
         "client_name": client_name,
-        "client_uri": client_uri(state, client, "reality"),
+        "client_uri": client_uri(state, client, "xhttp" if domain else "reality"),
     }
     with open(args.output, "x", encoding="utf-8") as handle:
         os.fchmod(handle.fileno(), 0o600)

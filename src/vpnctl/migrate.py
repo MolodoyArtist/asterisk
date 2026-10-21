@@ -14,16 +14,21 @@ class MigrationError(RuntimeError):
 
 def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
     schema = state.get("schema")
-    if schema == 2:
+    if schema == 3:
         validate_state(state)
         return state
-    if schema != 1:
+    if schema not in {1, 2}:
         raise MigrationError("This installation is too old for an automatic update.")
+    if state.get("telegram", {}).get("enabled") and state.get("telegram", {}).get("implementation") != "mtg":
+        raise MigrationError("Disable the old Telegram profile before updating. Then activate a domain and enable FakeTLS in the portal.")
     migrated = json.loads(json.dumps(state))
-    migrated["schema"] = 2
+    migrated["schema"] = 3
     migrated.pop("ip_mode", None)
-    # Preserve every existing XHTTP/TLS URI and do not add another profile.
-    migrated["layout"] = "legacy-xhttp-primary"
+    # Existing links and the portal endpoint survive an update. Switching to
+    # the new domain layout is an explicit action in the domain flow.
+    migrated.setdefault("panel_port", 8443)
+    if schema == 1:
+        migrated["layout"] = "legacy-xhttp-primary"
     try:
         validate_state(migrated)
     except ValidationError as exc:
@@ -40,7 +45,7 @@ def main() -> None:
         state = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(state, dict):
             raise MigrationError("State file must contain an object.")
-        if state.get("schema") == 1:
+        if state.get("schema") in {1, 2}:
             state = migrate_state(state)
             atomic_write(path, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o600)
         else:

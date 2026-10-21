@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared, pinned Xray distribution handling. Source this file; do not execute it.
 
-XRAY_VERSION="${VPNCTL_XRAY_VERSION:-v26.3.27}"
+XRAY_VERSION="${VPNCTL_XRAY_VERSION:-v26.6.1}"
 
 xray_platform() {
   case "$(uname -m)" in
@@ -14,8 +14,8 @@ xray_platform() {
 xray_sha256() {
   local arch=$1
   case "${XRAY_VERSION}:${arch}" in
-    v26.3.27:64) printf '%s\n' '23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae' ;;
-    v26.3.27:arm64-v8a) printf '%s\n' '4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c' ;;
+    v26.6.1:64) printf '%s\n' '136e822e99e616692550723e8b607cd8858c62a390aea5704938bc27930904ba' ;;
+    v26.6.1:arm64-v8a) printf '%s\n' '5c0f397b2605a853e5b308ae6485ad2ec395ca11ed7ae0fd023c480c7fdb279d' ;;
     *) printf '%s\n' "No reviewed SHA-256 is pinned for Xray ${XRAY_VERSION} (${arch})." >&2; return 1 ;;
   esac
 }

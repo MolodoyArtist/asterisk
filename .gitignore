@@ -4,3 +4,22 @@ __pycache__/
 .coverage
 .pytest_cache/
 *.swp
+
+# Deployment state and exported credentials never belong in source control.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.db
+*.db-*
+*.sqlite*
+*.pcap
+*.pcapng
+/work/
+/outputs/
+/state.json
+/auth.json
+/xray.json
+/mtg.toml
+/vpnctl-install.json
