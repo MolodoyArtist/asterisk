@@ -2,20 +2,27 @@ name: test
 
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Python tests
-        run: python3 -m unittest discover -s tests -v
+        run: /usr/bin/python3 -m unittest discover -s tests -v
       - name: Compile Python
-        run: python3 -m compileall -q src
+        run: /usr/bin/python3 -m compileall -q src
       - name: Static analysis
         run: |
           python3 -m pip install --disable-pip-version-check ruff==0.16.10 bandit==1.9.4
@@ -31,7 +38,19 @@ jobs:
         run: shellcheck install.sh scripts/*.sh scripts/mtproxy-run
       - name: Scan repository
         run: bash scripts/check-repository.sh
-      - name: Validate generated Nginx and Xray configurations
-        run: sudo bash scripts/integration-smoke.sh
+      - name: Validate configurations and FakeTLS cover
+        run: |
+          log="${RUNNER_TEMP}/integration.log"
+          if sudo bash scripts/integration-smoke.sh >"${log}" 2>&1; then
+            cat "${log}"
+          else
+            cat "${log}"
+            details="$(tail -n 30 "${log}")"
+            details="${details//%/%25}"
+            details="${details//$'\r'/%0D}"
+            details="${details//$'\n'/%0A}"
+            printf '::error title=Integration diagnostics::%s\n' "${details}"
+            exit 1
+          fi
       - name: Validate update and rollback
         run: sudo bash scripts/update-smoke.sh

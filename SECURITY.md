@@ -20,8 +20,10 @@ service as part of installation.
 
 ## Release trust
 
-Use only numbered GitHub releases and their `vpnctl-bootstrap-<version>.sh`
-asset. The bootstrap verifies the SHA-256 of the matching source archive before
-it starts the installer. Never pipe `main` or another moving branch into a
-root shell. Repository administrators must protect the `v*` tag pattern and
-limit release publishing permission to reviewed maintainers.
+The latest release's `install.sh` and its numbered `vpnctl-bootstrap-<version>.sh`
+are identical. Both verify the matching source archive against an embedded
+SHA-256 before running it. Use the numbered asset to pin a specific release;
+the latest link intentionally follows new published releases. Never run the raw
+source installer from a moving branch as root. Protect the `v*` tags and limit
+release publishing to reviewed maintainers. Checksums do not protect against
+a compromised release publisher.

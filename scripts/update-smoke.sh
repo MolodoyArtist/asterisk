@@ -12,6 +12,9 @@ make_fake_command() {
   cat >"${path}" <<'EOF'
 #!/usr/bin/env bash
 set -eu
+if [[ "${0##*/}" == systemctl ]]; then
+  printf '%s\n' "$*" >>"${VPNCTL_SMOKE_COMMAND_LOG}"
+fi
 if [[ "${0##*/}" == vpnctl && "${VPNCTL_SMOKE_FAIL_DOCTOR:-0}" == 1 ]]; then
   exit 1
 fi
@@ -44,7 +47,7 @@ prepare_case() {
 EOF
   printf '%s\n' 'old xray configuration' >"${case_dir}/config/xray.json"
   printf '%s\n' 'old nginx configuration' >"${case_dir}/nginx/vpnctl"
-  for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service; do
+  for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy-refresh.service mtproxy-refresh.timer; do
     printf 'old %s\n' "${unit}" >"${case_dir}/systemd/${unit}"
   done
   for command in systemctl nginx xray vpnctl ufw; do
@@ -69,12 +72,15 @@ run_update() {
   VPNCTL_XRAY_ASSET_DIR="${case_dir}/assets" \
   VPNCTL_XRAY_STAGE_DIR="${case_dir}/xray-stage" \
   VPNCTL_CLI_BIN="${case_dir}/bin/vpnctl" \
+  VPNCTL_RENEW_HOOK="${case_dir}/renew-hook" \
   VPNCTL_UFW_BIN="${case_dir}/bin/ufw" \
   VPNCTL_HELPER_DIR="${case_dir}/helpers" \
+  VPNCTL_MTPROXY_ENV="${case_dir}/mtproxy/mtg.toml" \
   VPNCTL_UFW_APP_DIR="${case_dir}/ufw-applications" \
-  VPNCTL_PYTHON_BIN=/usr/bin/python3 \
+  VPNCTL_PYTHON_BIN="${VPNCTL_TEST_PYTHON:-/usr/bin/python3}" \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
+  VPNCTL_SMOKE_COMMAND_LOG="${case_dir}/commands.log" \
   VPNCTL_SMOKE_ALLOW_NONROOT=1 bash "${ROOT}/scripts/update.sh"
 }
 
@@ -86,12 +92,15 @@ printf '%s\n' 'old geosite' >"${success_dir}/assets/geosite.dat"
 run_update "${success_dir}" 0
 [[ ! -e "${success_dir}/install/src/old-version-marker" ]]
 grep -q '^Wants=nginx.service xray.service$' "${success_dir}/systemd/vpnctl-agent.service"
-grep -q '"schema": 2' "${success_dir}/state/state.json"
+grep -q '"schema": 3' "${success_dir}/state/state.json"
 grep -q '"layout": "legacy-xhttp-primary"' "${success_dir}/state/state.json"
 grep -q '00000000-0000-4000-8000-000000000001' "${success_dir}/state/state.json"
 grep -q '^new geoip$' "${success_dir}/assets/geoip.dat"
 [[ -f "${success_dir}/systemd/mtproxy.service" ]]
 [[ -x "${success_dir}/helpers/mtproxy" ]]
+[[ ! -e "${success_dir}/systemd/mtproxy-refresh.service" ]]
+[[ ! -e "${success_dir}/systemd/mtproxy-refresh.timer" ]]
+grep -Fxq 'disable --now mtproxy-refresh.timer' "${success_dir}/commands.log"
 
 rollback_dir="${TEMP_ROOT}/rollback"
 prepare_case "${rollback_dir}"
@@ -111,6 +120,8 @@ grep -q '^old geoip$' "${rollback_dir}/assets/geoip.dat"
 [[ "$(sha256sum "${rollback_dir}/state/state.json" | awk '{print $1}')" == "${state_before}" ]]
 [[ ! -e "${rollback_dir}/systemd/mtproxy.service" ]]
 [[ ! -e "${rollback_dir}/helpers/mtproxy" ]]
+grep -q '^old mtproxy-refresh.timer$' "${rollback_dir}/systemd/mtproxy-refresh.timer"
+grep -Fxq 'enable --now mtproxy-refresh.timer' "${rollback_dir}/commands.log"
 
 recovery_dir="${TEMP_ROOT}/existing-recovery"
 prepare_case "${recovery_dir}"

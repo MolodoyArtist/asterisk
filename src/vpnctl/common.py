@@ -27,8 +27,8 @@ DEFAULT_KEY = CONFIG_DIR / "tls" / "default.key"
 # Keeping this configurable makes the rendered configuration testable without
 # creating anything under /etc. Production retains Certbot's standard path.
 CERT_LIVE_DIR = Path(os.environ.get("VPNCTL_CERT_LIVE_DIR", "/etc/letsencrypt/live"))
-PANEL_PORT = 8443
-MTPROXY_PORT = 8444
+PANEL_PORT = 9443
+MTPROXY_PORT = 8443
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$", re.IGNORECASE)
@@ -117,7 +117,7 @@ def load_state() -> dict[str, Any]:
 
 
 def validate_state(state: dict[str, Any]) -> None:
-    if state.get("schema") != 2:
+    if state.get("schema") not in {2, 3}:
         raise ValidationError("Unsupported state schema.")
     if ":" in validate_ip(str(state.get("public_ip", ""))):
         raise ValidationError("The primary public address must be IPv4.")
@@ -126,8 +126,13 @@ def validate_state(state: dict[str, Any]) -> None:
     if state.get("domain") is not None and validate_domain(str(state["domain"])) != state["domain"]:
         raise ValidationError("The domain name must use its canonical form.")
     layout = state.get("layout", "reality-primary")
-    if layout not in {"reality-primary", "legacy-xhttp-primary"}:
+    if layout not in {"reality-primary", "domain-primary", "legacy-xhttp-primary"}:
         raise ValidationError("The network layout is invalid.")
+    if layout == "domain-primary" and not state.get("domain"):
+        raise ValidationError("A domain is required for the domain profile.")
+    port = state.get("panel_port", PANEL_PORT)
+    if type(port) is not int or port not in {8443, 9443}:
+        raise ValidationError("The portal port is invalid.")
     if not TOKEN_RE.fullmatch(str(state.get("xhttp_path", ""))):
         raise ValidationError("The XHTTP path is invalid.")
     if layout == "reality-primary":
@@ -155,6 +160,8 @@ def validate_state(state: dict[str, Any]) -> None:
             raise ValidationError("A client identifier is invalid.") from exc
         if not isinstance(item.get("enabled", True), bool) or name.casefold() in names or identifier in ids:
             raise ValidationError("Client records must be unique and valid.")
+        if layout == "domain-primary" and not TOKEN_RE.fullmatch(str(item.get("hysteria_password", ""))):
+            raise ValidationError("The Hysteria credential is invalid.")
         names.add(name.casefold())
         ids.add(identifier)
     telegram = state.get("telegram")
@@ -164,19 +171,64 @@ def validate_state(state: dict[str, Any]) -> None:
         if telegram["enabled"]:
             port = telegram.get("port")
             secret = telegram.get("secret")
-            if not isinstance(port, int) or not 1024 <= port <= 65535 or port in {443, PANEL_PORT}:
+            if not isinstance(port, int) or not 1024 <= port <= 65535 or port in {443, panel_port(state)}:
                 raise ValidationError("Telegram proxy port is invalid.")
+            if telegram.get("implementation") == "mtg" and (not state.get("domain") or port != MTPROXY_PORT):
+                raise ValidationError("FakeTLS requires a domain and its dedicated port.")
             if not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{32}", secret):
                 raise ValidationError("Telegram proxy secret is invalid.")
+            if telegram.get("implementation") == "mtg" and secret == "0" * 32:
+                raise ValidationError("FakeTLS requires a non-zero secret.")
 
 
 def telegram_uri(state: dict[str, Any]) -> str:
     telegram = state.get("telegram")
     if not isinstance(telegram, dict) or not telegram.get("enabled"):
         raise ValidationError("Telegram proxy is not enabled.")
-    # `dd` asks Telegram clients to use MTProxy random padding. The server keeps
-    # the underlying 16-byte secret, as required by the official implementation.
-    return "tg://proxy?" + urllib.parse.urlencode({"server": state["public_ip"], "port": telegram["port"], "secret": "dd" + telegram["secret"]})
+    if telegram.get("implementation") == "mtg":
+        domain = validate_domain(str(state.get("domain", "")))
+        secret = "ee" + telegram["secret"] + domain.encode("ascii").hex()
+        server = domain
+    else:
+        secret, server = "dd" + telegram["secret"], state["public_ip"]
+    return "tg://proxy?" + urllib.parse.urlencode({"server": server, "port": telegram["port"], "secret": secret})
+
+
+def panel_port(state: dict[str, Any]) -> int:
+    return int(state.get("panel_port", PANEL_PORT))
+
+
+def domain_mode(state: dict[str, Any]) -> bool:
+    return state.get("layout") == "domain-primary"
+
+
+def hysteria_uri(state: dict[str, Any], client: dict[str, Any]) -> str:
+    if not domain_mode(state) or not client.get("hysteria_password"):
+        raise ValidationError("Activate the domain profiles first.")
+    params = urllib.parse.urlencode({"sni": state["domain"], "alpn": "h3"})
+    return f"hysteria2://{client['hysteria_password']}@{state['domain']}:443?{params}#{urllib.parse.quote(client['name'], safe='')}"
+
+
+def client_config(state: dict[str, Any], client: dict[str, Any], profile: str) -> dict[str, Any]:
+    if not domain_mode(state):
+        raise ValidationError("JSON profiles become available after domain activation.")
+    domain = state["domain"]
+    if profile == "hysteria":
+        return {
+            "log": {"level": "warn"},
+            "dns": {"servers": [{"type": "https", "tag": "dns-proxy", "server": "1.1.1.1", "server_port": 443, "path": "/dns-query", "tls": {"enabled": True, "server_name": "cloudflare-dns.com"}, "detour": "proxy"}], "final": "dns-proxy"},
+            "inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "mtu": 1400, "auto_route": True}],
+            "outbounds": [{"type": "hysteria2", "tag": "proxy", "server": state["public_ip"], "server_port": 443, "password": client["hysteria_password"], "tls": {"enabled": True, "server_name": domain, "alpn": ["h3"], "insecure": False}}],
+            "route": {"rules": [{"port": 53, "action": "hijack-dns"}], "final": "proxy", "auto_detect_interface": True},
+        }
+    if profile == "xhttp":
+        return {
+            "log": {"loglevel": "warning"},
+            "inbounds": [{"listen": "127.0.0.1", "port": 1080, "protocol": "socks", "settings": {"udp": True}}],
+            "outbounds": [{"tag": "proxy", "protocol": "vless", "settings": {"vnext": [{"address": domain, "port": 443, "users": [{"id": client["id"], "encryption": "none"}]}]}, "streamSettings": {"network": "xhttp", "security": "tls", "xhttpSettings": {"path": f"/{state['xhttp_path']}/", "host": domain, "mode": "auto"}, "tlsSettings": {"serverName": domain, "allowInsecure": False, "fingerprint": "firefox", "alpn": ["h2", "http/1.1"]}}}],
+        }
+    raise ValidationError("Unknown JSON profile.")
+
 
 
 def hash_password(password: str, salt: bytes | None = None) -> dict[str, Any]:
@@ -230,7 +282,7 @@ def client_uri(state: dict[str, Any], client: dict[str, Any], profile: str = "re
     params = {"type": "xhttp", "security": "tls", "encryption": "none", "mode": "auto", "path": f"/{state['xhttp_path']}/", "fp": "firefox", "packetEncoding": "xudp"}
     if domain:
         params.update({"sni": domain, "host": domain})
-    xhttp_port = PANEL_PORT if state.get("layout", "reality-primary") == "reality-primary" else 443
+    xhttp_port = panel_port(state) if state.get("layout", "reality-primary") == "reality-primary" else 443
     return f"vless://{client['id']}@{host}:{xhttp_port}?{urllib.parse.urlencode(params)}#{label}"
 
 
@@ -244,13 +296,43 @@ def render_xray(state: dict[str, Any]) -> str:
         reality = state["reality"]
         inbounds.append({"port": 443, "protocol": "vless", "settings": {"clients": _clients(state, "xtls-rprx-vision"), "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"show": False, "dest": f"{reality['target']}:443", "xver": 0, "serverNames": [reality["server_name"]], "privateKey": reality["private_key"], "shortIds": [reality["short_id"]]}}, "sniffing": {"enabled": False}})
     if state.get("domain") or state.get("layout", "reality-primary") == "legacy-xhttp-primary":
-        inbounds.append({"listen": "127.0.0.1", "port": 5555, "protocol": "vless", "settings": {"clients": _clients(state), "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "none", "xhttpSettings": {"path": f"/{state['xhttp_path']}/", "mode": "auto"}}, "sniffing": {"enabled": False}})
+        # Xray v26.6.1 expects header names here, not IP ranges. Only local
+        # nginx reaches this listener and it overwrites both forwarded headers.
+        inbounds.append({"listen": "127.0.0.1", "port": 5555, "protocol": "vless", "settings": {"clients": _clients(state), "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "none", "sockopt": {"trustedXForwardedFor": ["X-Vpnctl-Proxy"]}, "xhttpSettings": {"path": f"/{state['xhttp_path']}/", "mode": "auto"}}, "sniffing": {"enabled": False}})
+    if domain_mode(state):
+        domain = state["domain"]
+        # Public QUIC ingress; access is authenticated by a per-device secret.
+        inbounds.append({
+            "listen": "0.0.0.0",  # nosec B104
+            "port": 443,
+            "tag": "hysteria",
+            "protocol": "hysteria",
+            "settings": {
+                "version": 2,
+                "clients": [{"auth": c["hysteria_password"], "email": c["name"]} for c in state["clients"] if c.get("enabled", True)],
+            },
+            "streamSettings": {
+                "network": "hysteria",
+                "security": "tls",
+                "hysteriaSettings": {
+                    "version": 2,
+                    "udpIdleTimeout": 60,
+                    "masquerade": {"type": "proxy", "url": f"https://{domain}/", "rewriteHost": True, "insecure": False},
+                },
+                "tlsSettings": {
+                    "minVersion": "1.3", "maxVersion": "1.3", "alpn": ["h3"],
+                    "certificates": [{"certificateFile": str(CONFIG_DIR / "tls/domain.crt"), "keyFile": str(CONFIG_DIR / "tls/domain.key"), "oneTimeLoading": False}],
+                },
+            },
+        })
     config = {"log": {"loglevel": "warning", "access": "none", "error": "none"}, "inbounds": inbounds, "outbounds": [{"protocol": "freedom", "tag": "direct"}, {"protocol": "blackhole", "tag": "blocked"}], "routing": {"domainStrategy": "AsIs", "rules": [{"type": "field", "ip": ["geoip:private", "169.254.169.254/32", "fe80::/10"], "outboundTag": "blocked"}, {"type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked"}, {"type": "field", "port": "25", "network": "tcp", "outboundTag": "blocked"}]}}
     return json.dumps(config, indent=2, sort_keys=True) + "\n"
 
 
-def _application_server(name: str, cert_name: str, default: bool, state: dict[str, Any], with_xhttp: bool) -> str:
-    port = PANEL_PORT if state.get("layout", "reality-primary") == "reality-primary" else 443
+def _application_server(name: str, cert_name: str, default: bool, state: dict[str, Any], with_xhttp: bool, port_override: int | None = None, cover: bool = False) -> str:
+    port = panel_port(state) if state.get("layout", "reality-primary") == "reality-primary" else 443
+    if port_override is not None:
+        port = port_override
     flag = " default_server" if default else ""
     guard = f'    if ($host != "{name}") {{ return 404; }}\n' if default else ""
     xhttp = ""
@@ -261,6 +343,8 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
         proxy_pass http://127.0.0.1:5555;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Vpnctl-Proxy true;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 360s;
@@ -268,6 +352,36 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
         proxy_intercept_errors on;
         error_page 400 404 405 =404 @not_found;
     }}
+'''
+    routes = '''    location = /login {
+        client_max_body_size 16k;
+        limit_req zone=vpnctl_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+    }
+    location / {
+        client_max_body_size 16k;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+        proxy_intercept_errors on;
+        error_page 404 = @not_found;
+    }
+    location @not_found { return 404; }
+'''
+    if cover:
+        routes = '''    location = / { default_type text/html; return 200 '<!doctype html><html lang="en"><title>Welcome</title><h1>Welcome</h1><p>This site is online.</p></html>'; }
+    location / { return 404; }
+    location @not_found { return 404; }
 '''
     return f'''server {{
     listen {port} ssl http2{flag};
@@ -279,31 +393,7 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
     ssl_certificate {CERT_LIVE_DIR}/{cert_name}/fullchain.pem;
     ssl_certificate_key {CERT_LIVE_DIR}/{cert_name}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
-{guard}{xhttp}    location = /login {{
-        client_max_body_size 16k;
-        limit_req zone=vpnctl_login burst=5 nodelay;
-        proxy_pass http://127.0.0.1:8787;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 900s;
-        proxy_send_timeout 900s;
-    }}
-    location / {{
-        client_max_body_size 16k;
-        proxy_pass http://127.0.0.1:8787;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 900s;
-        proxy_send_timeout 900s;
-        proxy_intercept_errors on;
-        error_page 404 = @not_found;
-    }}
-    location @not_found {{ return 404; }}
-}}
+{guard}{xhttp}{routes}}}
 '''
 
 
@@ -331,8 +421,15 @@ def render_nginx(state: dict[str, Any]) -> str:
     location / { return 404; }
 }
 ''']
+    if domain_mode(state):
+        domain = state["domain"]
+        portal = panel_port(state)
+        blocks.extend([_reject_server(443), _reject_server(portal)])
+        blocks.append(_application_server(domain, domain, False, state, True, port_override=443, cover=True))
+        blocks.append(_application_server(domain, domain, False, state, False, port_override=portal))
+        return "\n".join(blocks)
     if state.get("domain"):
-        blocks.append(_reject_server(443 if legacy else PANEL_PORT))
+        blocks.append(_reject_server(443 if legacy else panel_port(state)))
     else:
         blocks.append(_application_server(str(state["public_ip"]), str(state["public_ip"]), True, state, legacy))
     if state.get("domain"):
@@ -343,7 +440,7 @@ def render_nginx(state: dict[str, Any]) -> str:
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\w:])")
 UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b")
-URI_SECRET_RE = re.compile(r"(?:vless|tg)://[^\s<]+", re.IGNORECASE)
+URI_SECRET_RE = re.compile(r"(?:vless|hysteria2?|hy2|tg)://[^\s<]+", re.IGNORECASE)
 MTPROXY_SECRET_RE = re.compile(r"\b(?:MTPROXY_SECRET|secret)=[0-9a-f]{32}\b", re.IGNORECASE)
 
 

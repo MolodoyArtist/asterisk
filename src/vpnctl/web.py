@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import http.cookies
+import json
 import os
 import threading
 import time
@@ -142,6 +143,9 @@ class Handler(BaseHTTPRequestHandler):
                 name = urllib.parse.parse_qs(parsed.query).get("name", [""])[0]
                 profile = urllib.parse.parse_qs(parsed.query).get("profile", ["reality"])[0]
                 self.qr(name, profile)
+            elif parsed.path == "/config.json":
+                query = urllib.parse.parse_qs(parsed.query)
+                self.download_config(query.get("name", [""])[0], query.get("profile", [""])[0])
             elif parsed.path == "/telegram/qr":
                 self.telegram_qr()
             else:
@@ -200,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
             action, payload, target = routes[self.path]
             result = call(action, payload)
             if self.path == "/domain/add":
-                target = f"https://{urllib.parse.quote(str(result['domain']), safe='.-')}:{8443}/domain?added=1"
+                target = f"https://{urllib.parse.quote(str(result['domain']), safe='.-')}:{int(result.get('panel_port', 9443))}/domain?added=1"
             if fields.get("domain") and target.startswith("/"):
                 target += "&domain=" + urllib.parse.quote(fields["domain"])
             self.redirect(target)
@@ -269,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
         memory_used = metrics["memory_total"] - metrics["memory_available"]
         domain_card = ""
         if not status.get("domain"):
-            domain_card = '<section class="notice"><h2>Add an optional domain profile</h2><p>A domain enables the additional VLESS + XHTTP + TLS profile. The recommended REALITY profile already works without one.</p><a class="button" href="/domain">Add a domain</a></section>'
+            domain_card = '<section class="notice"><h2>Set up your domain</h2><p>A domain replaces the temporary REALITY profile with XHTTP + TLS and Hysteria 2. Your current connection works until you activate the new profiles.</p><a class="button" href="/domain">Add a domain</a></section>'
         certs = "".join(f"<li>{h(c['name'])}: {h(c.get('days_remaining', '?'))} days remaining</li>" for c in status["certificates"])
         body = f"""<h1>Overview</h1>{domain_card}<h2>System</h2><div class="grid"><section><div class="muted">Services</div><div class="metric {'ok' if healthy else 'bad'}">{'Online' if healthy else 'Needs attention'}</div></section><section><div class="muted">Devices</div><div class="metric">{status['client_count']}</div></section><section><div class="muted">Connections</div><div class="metric">{metrics['connections']}</div></section><section><div class="muted">Load</div><div class="metric">{metrics['load'][0]}</div></section><section><div class="muted">Memory</div><div class="metric">{memory_used // 1048576} / {metrics['memory_total'] // 1048576} MiB</div></section><section><div class="muted">Disk free</div><div class="metric">{metrics['disk_free'] // 1073741824} GiB</div></section></div><section><h2>Certificates</h2><ul>{certs}</ul><form method="post" action="/certificates/renew"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Check renewal now</button></form></section>"""
         self.send_html(layout("Overview", body, csrf=session["csrf"]))
@@ -279,19 +283,21 @@ class Handler(BaseHTTPRequestHandler):
         for item in call("clients")["clients"]:
             if item.get("enabled"):
                 uri = ""
-                if item.get("reality_uri"):
-                    uri += f"<div class=\"muted\">Recommended: VLESS + REALITY + Vision</div><pre>{h(item['reality_uri'])}</pre>"
-                if item.get("xhttp_uri"):
-                    uri += f"<div class=\"muted\">VLESS + XHTTP + TLS</div><pre>{h(item['xhttp_uri'])}</pre>"
+                qr = ""
+                for profile, title in (("reality", "VLESS + REALITY + Vision"), ("xhttp", "VLESS + XHTTP + TLS"), ("hysteria", "Hysteria 2")):
+                    value = item.get(f"{profile}_uri")
+                    if value:
+                        query = urllib.parse.urlencode({"name": item["name"], "profile": profile})
+                        uri += f"<div class=\"muted\">{h(title)}</div><pre>{h(value)}</pre>"
+                        qr += f'<p><a href="/qr?{h(query)}">Show {h(title)} QR code</a>'
+                        if profile in item.get("json_profiles", []):
+                            target = "sing-box" if profile == "hysteria" else "Xray / v2RayTun"
+                            qr += f' · <a href="/config.json?{h(query)}">Download JSON for {h(target)}</a>'
+                        qr += "</p>"
             else:
-                uri = "Disabled"
-            qr = ""
-            if item.get("enabled") and item.get("reality_uri"):
-                qr += f'<p><a href="/qr?name={urllib.parse.quote(item["name"])}&amp;profile=reality">Show REALITY QR code</a></p>'
-            if item.get("enabled") and item.get("xhttp_uri"):
-                qr += f'<p><a href="/qr?name={urllib.parse.quote(item["name"])}&amp;profile=xhttp">Show XHTTP QR code</a></p>'
+                uri, qr = "Disabled", ""
             rows.append(f"<tr><td>{h(item['name'])}</td><td>{uri}{qr}</td><td><form class=\"inline\" method=\"post\" action=\"/clients/delete\"><input type=\"hidden\" name=\"csrf\" value=\"{h(session['csrf'])}\"><input type=\"hidden\" name=\"name\" value=\"{h(item['name'])}\"><button class=\"danger\">Delete</button></form></td></tr>")
-        body = f"""<h1>Devices</h1><section><p>Import the VLESS link into v2RayTun from the clipboard, or open its QR code and scan it in the app.</p><form method="post" action="/clients/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="name">Device name</label><input id="name" name="name" maxlength="32" pattern="[A-Za-z0-9_.-]+" required><p><button>Add device</button></p></form></section><section><table><thead><tr><th>Name</th><th>v2RayTun import link</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>"""
+        body = f"""<h1>Devices</h1><section><p>Copy an import link or scan its QR code. After domain activation, download XHTTP JSON for Xray/v2RayTun or Hysteria JSON for sing-box. A sing-box profile does not support XHTTP. Downloaded files contain private credentials.</p><form method="post" action="/clients/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="name">Device name</label><input id="name" name="name" maxlength="32" pattern="[A-Za-z0-9_.-]+" required><p><button>Add device</button></p></form></section><section><table><thead><tr><th>Name</th><th>Profiles</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>"""
         self.send_html(layout("Devices", body, csrf=session["csrf"]))
 
     def domain(self, session: dict[str, Any]) -> None:
@@ -302,14 +308,14 @@ class Handler(BaseHTTPRequestHandler):
         if "checked" in query:
             banner = '<section class="ok">DNS is ready. You can issue the certificate now.</section>'
         elif "added" in query:
-            banner = '<section class="ok">Domain profile is active. Import the XHTTP + TLS link from Devices and test it.</section>'
-        if status.get("domain"):
-            domain_form = f"""<section><h2>Active domain</h2><p><code>{h(status['domain'])}</code> is configured. The VLESS + XHTTP + TLS profile is now available on the Devices page. Certificate renewal is automatic.</p></section>"""
+            banner = '<section class="ok">XHTTP + TLS and Hysteria 2 are active. Download your new profiles from Devices. The temporary REALITY profile has been removed.</section>'
+        if status.get("domain") and status.get("profiles", {}).get("hysteria"):
+            domain_form = f"""<section><h2>Active domain</h2><p><code>{h(status['domain'])}</code> is configured. XHTTP and Hysteria profiles, including JSON downloads, are available on the Devices page. Certificate renewal is automatic.</p></section>"""
         else:
             ipv6_help = f" If you use IPv6, create an AAAA record with <code>{h(status['public_ipv6'])}</code>." if status.get("public_ipv6") else " Do not create an AAAA record because this VPS has no detected public IPv6."
             activate_form = ""
-            if "checked" in query and value:
-                activate_form = f"""<p class="muted">After activation, sign in again at <code>https://{h(value)}:8443/</code>.</p><form method="post" action="/domain/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><input type="hidden" name="domain" value="{h(value)}"><button>Issue certificate and activate</button></form>"""
+            if ("checked" in query or status.get("domain")) and value:
+                activate_form = f"""<p class="muted">After activation, sign in again at <code>https://{h(value)}:9443/</code>.</p><form method="post" action="/domain/add"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><input type="hidden" name="domain" value="{h(value)}"><p>The temporary REALITY profile will stop working after activation. Disable that connection and sign in here again to download the new profiles.</p><button>Activate XHTTP and Hysteria</button></form>"""
             domain_form = f"""<section><h2>1. Register a hostname</h2><p>The quickest free option is <a href="https://www.noip.com/personal" rel="noreferrer">No-IP</a>. Its free hostnames must be confirmed every 30 days.</p><h2>2. Point it to this server</h2><p>Create an A record whose value is <code>{h(status['public_ip'])}</code>.{ipv6_help}</p><h2>3. Check DNS and activate</h2><form method="post" action="/domain/check"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><label for="domain">Hostname</label><input id="domain" name="domain" value="{h(value)}" placeholder="access.example.com" required><p><button>Check DNS</button></p></form>{activate_form}</section>"""
         self.send_html(layout("Domain", f"<h1>Domain setup</h1>{banner}{domain_form}", csrf=session["csrf"]))
 
@@ -327,12 +333,12 @@ class Handler(BaseHTTPRequestHandler):
             if not status.get("available", True):
                 body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Unavailable on this VPS</h2><p>{h(status.get('unavailable_reason', 'This optional profile is unavailable.'))}</p></section>"""
             else:
-                body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Optional MTProto profile</h2><p>This is for Telegram only. It is separate from your VLESS profiles and uses TCP port 8444, so it does not change REALITY, XHTTP, Nginx or port 443.</p><p class="muted">The first activation downloads and builds the checksum-verified official Telegram MTProxy source. It can take several minutes; keep this page open. A separate connection secret and random padding are used.</p><form method="post" action="/telegram/enable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Enable Telegram proxy</button></form></section>"""
+                body = f"""<h1>Telegram proxy</h1>{banner}<section><h2>Optional MTProto profile</h2><p>This is for Telegram only. It is separate from your VLESS profiles and uses TCP port 8443. It is independent of XHTTP and Hysteria.</p><p class="muted">The first activation installs a checksum-verified mtg binary. FakeTLS uses your domain and forwards ordinary HTTPS connections to your public site. Calls may need a separate VPN connection.</p><form method="post" action="/telegram/enable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Enable Telegram proxy</button></form></section>"""
         else:
             uri = status["uri"]
             service_state = "Online" if status.get("active") else "Needs attention"
             state_class = "ok" if status.get("active") else "bad"
-            nat_text = "NAT mapping detected and configured automatically." if status.get("nat_mode") == "configured" else "Direct public IP connection."
+            nat_text = "FakeTLS with your domain and public website as cover."
             body = f"""<h1>Telegram proxy</h1>{banner}<section><p class="{state_class}">{service_state} on TCP port {h(status['port'])}</p><p class="muted">{nat_text}</p><p>Open this private link on a device with Telegram, or scan its QR code from Telegram's proxy settings.</p><pre>{h(uri)}</pre><p><a class="button" href="/telegram/qr">Show Telegram QR code</a></p><p class="muted">Anyone with this link can use this Telegram-only proxy. Rotate it if it is shared accidentally.</p><form class="inline" method="post" action="/telegram/rotate"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button>Rotate link</button></form> <form class="inline" method="post" action="/telegram/disable"><input type="hidden" name="csrf" value="{h(session['csrf'])}"><button class="danger">Disable</button></form></section>"""
         self.send_html(layout("Telegram", body, csrf=session["csrf"]))
 
@@ -342,7 +348,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def qr(self, name: str, profile: str) -> None:
         try:
-            if profile not in {"reality", "xhttp"}:
+            if profile not in {"reality", "xhttp", "hysteria"}:
                 raise RPCError("Unknown profile.")
             raw = base64.b64decode(call("client_qr", {"name": name, "profile": profile})["png"], validate=True)
         except (KeyError, TypeError, ValueError, binascii.Error) as exc:
@@ -354,6 +360,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(raw)
+
+    def download_config(self, name: str, profile: str) -> None:
+        if profile not in {"xhttp", "hysteria"}:
+            raise RPCError("Unknown JSON profile.")
+        result = call("client_json", {"name": name, "profile": profile})
+        config = result["config"]
+        if not isinstance(config, dict):
+            raise RPCError("Control service returned an invalid profile.")
+        # Never interpolate an agent-supplied filename into an HTTP header.
+        filename = f"{profile}-config.json"
+        data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, private")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(data)
 
     def telegram_qr(self) -> None:
         try:

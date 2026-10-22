@@ -9,7 +9,12 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
   publish:
+    needs: checks
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -17,19 +22,6 @@ jobs:
           fetch-depth: 0
       - name: Verify tag points to the checked-out commit
         run: git describe --exact-match --tags HEAD
-      - name: Run release gate
-        run: |
-          python3 -m unittest discover -s tests -v
-          python3 -m compileall -q src
-          bash -n install.sh scripts/*.sh scripts/mtproxy-run
-          bash scripts/check-repository.sh
-      - name: Run privileged smoke tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nginx ripgrep shellcheck
-          shellcheck install.sh scripts/*.sh scripts/mtproxy-run
-          sudo bash scripts/integration-smoke.sh
-          sudo bash scripts/update-smoke.sh
       - name: Build release archive and verified bootstrap
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -39,7 +31,8 @@ jobs:
           sed -e "s/@RELEASE_TAG@/${RELEASE_TAG}/g" -e "s/@ARCHIVE_SHA256@/${SHA256}/g" \
             scripts/release-bootstrap.sh.in >"vpnctl-bootstrap-${RELEASE_TAG}.sh"
           chmod 0755 "vpnctl-bootstrap-${RELEASE_TAG}.sh"
-          sha256sum "vpnctl-${RELEASE_TAG}.tar.gz" "vpnctl-bootstrap-${RELEASE_TAG}.sh" >SHA256SUMS
+          cp "vpnctl-bootstrap-${RELEASE_TAG}.sh" install.sh
+          sha256sum "vpnctl-${RELEASE_TAG}.tar.gz" "vpnctl-bootstrap-${RELEASE_TAG}.sh" install.sh >SHA256SUMS
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,7 +40,10 @@ jobs:
         run: |
           gh release create "${RELEASE_TAG}" \
             --title "vpnctl ${RELEASE_TAG}" \
-            --generate-notes \
+            --verify-tag \
+            --latest \
+            --notes-from-tag \
             "vpnctl-${RELEASE_TAG}.tar.gz" \
             "vpnctl-bootstrap-${RELEASE_TAG}.sh" \
+            install.sh \
             SHA256SUMS

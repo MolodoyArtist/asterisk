@@ -17,15 +17,22 @@ PYTHON_BIN="${VPNCTL_PYTHON_BIN:-/usr/bin/python3}"
 HELPER_DIR="${VPNCTL_HELPER_DIR:-/usr/local/lib/vpnctl}"
 UFW_APP_DIR="${VPNCTL_UFW_APP_DIR:-/etc/ufw/applications.d}"
 UFW_APP_FILE="${UFW_APP_DIR}/vpnctl-mtproxy"
-MTPROXY_ENV="${VPNCTL_MTPROXY_ENV:-/etc/mtproxy/vpnctl.env}"
+MTPROXY_ENV="${VPNCTL_MTPROXY_ENV:-/etc/mtproxy/mtg.toml}"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d /tmp/vpnctl-update.XXXXXX)"
 STAGED_SRC="${INSTALL_DIR}/src.update"
 BACKUP_SRC="${INSTALL_DIR}/src.rollback"
 STAGED_XRAY="${TEMP_DIR}/xray"
+RENEW_HOOK="${VPNCTL_RENEW_HOOK:-/etc/letsencrypt/renewal-hooks/deploy/reload-nginx}"
 ROLLBACK_READY=0
 STAGED_OWNED=0
 BACKUP_OWNED=0
+LEGACY_REFRESH_ENABLED=0
+UNITS=(vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer
+  xray.service mtproxy.service vpnctl-mtproxy-provision.service
+  vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service
+  vpnctl-domain-firewall.service vpnctl-domain-firewall-cleanup.service)
+LEGACY_UNITS=(mtproxy-refresh.service mtproxy-refresh.timer)
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -47,7 +54,7 @@ finish() {
     else
       restore_failed=1
     fi
-    for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy.service mtproxy-refresh.service mtproxy-refresh.timer vpnctl-mtproxy-provision.service vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service; do
+    for unit in "${UNITS[@]}" "${LEGACY_UNITS[@]}"; do
       if [[ -f "${TEMP_DIR}/units/${unit}" ]]; then
         install -m 0644 "${TEMP_DIR}/units/${unit}" "${SYSTEMD_DIR}/${unit}" || restore_failed=1
       elif [[ -f "${TEMP_DIR}/units/${unit}.missing" ]]; then
@@ -58,6 +65,22 @@ finish() {
     done
     cp -a "${TEMP_DIR}/xray.json" "${XRAY_CONFIG}" || restore_failed=1
     cp -a "${TEMP_DIR}/vpnctl.nginx" "${NGINX_SITE}" || restore_failed=1
+    if [[ -d "${TEMP_DIR}/tls" ]]; then
+      rm -rf -- "$(dirname -- "${XRAY_CONFIG}")/tls" || restore_failed=1
+      cp -a "${TEMP_DIR}/tls" "$(dirname -- "${XRAY_CONFIG}")/tls" || restore_failed=1
+    else
+      rm -rf -- "$(dirname -- "${XRAY_CONFIG}")/tls" || restore_failed=1
+    fi
+    if [[ -f "${TEMP_DIR}/renew-hook" ]]; then
+      cp -a "${TEMP_DIR}/renew-hook" "${RENEW_HOOK}" || restore_failed=1
+    else
+      rm -f -- "${RENEW_HOOK}" || restore_failed=1
+    fi
+    if [[ -f "${TEMP_DIR}/network-helper" ]]; then
+      cp -a "${TEMP_DIR}/network-helper" "${HELPER_DIR}/network" || restore_failed=1
+    else
+      rm -f -- "${HELPER_DIR}/network" || restore_failed=1
+    fi
     cp -a "${TEMP_DIR}/state.json" "${STATE_FILE}" || restore_failed=1
     if [[ -f "${TEMP_DIR}/auth.json" ]]; then
       cp -a "${TEMP_DIR}/auth.json" "${AUTH_FILE}" || restore_failed=1
@@ -93,6 +116,9 @@ finish() {
     "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web || restore_failed=1
     if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy; then
       "${SYSTEMCTL_BIN}" restart mtproxy || true
+    fi
+    if [[ "${LEGACY_REFRESH_ENABLED}" == 1 ]]; then
+      "${SYSTEMCTL_BIN}" enable --now mtproxy-refresh.timer || restore_failed=1
     fi
     if [[ "${restore_failed}" -eq 0 ]]; then
       ROLLBACK_READY=0
@@ -136,7 +162,7 @@ PYTHONPATH="${STAGED_SRC}" VPNCTL_STATE_DIR="$(dirname -- "${STATE_FILE}")" "${P
 "${PYTHON_BIN}" - "${STATE_FILE}" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
-if not isinstance(value, dict) or value.get("schema") not in (1, 2):
+if not isinstance(value, dict) or value.get("schema") not in (1, 2, 3):
     raise SystemExit("unsupported state schema")
 PY
 bash -n "${ROOT}/install.sh" "${ROOT}"/scripts/*.sh
@@ -152,7 +178,7 @@ else
 fi
 
 install -d -m 0700 "${TEMP_DIR}/units"
-for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy.service mtproxy-refresh.service mtproxy-refresh.timer vpnctl-mtproxy-provision.service vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service; do
+for unit in "${UNITS[@]}" "${LEGACY_UNITS[@]}"; do
   if [[ -f "${SYSTEMD_DIR}/${unit}" ]]; then
     cp -a "${SYSTEMD_DIR}/${unit}" "${TEMP_DIR}/units/${unit}"
   else
@@ -162,6 +188,9 @@ done
 cp -a "${XRAY_CONFIG}" "${TEMP_DIR}/xray.json"
 cp -a "${NGINX_SITE}" "${TEMP_DIR}/vpnctl.nginx"
 cp -a "${STATE_FILE}" "${TEMP_DIR}/state.json"
+[[ -d "$(dirname -- "${XRAY_CONFIG}")/tls" ]] && cp -a "$(dirname -- "${XRAY_CONFIG}")/tls" "${TEMP_DIR}/tls"
+[[ -f "${RENEW_HOOK}" ]] && cp -a "${RENEW_HOOK}" "${TEMP_DIR}/renew-hook"
+[[ -f "${HELPER_DIR}/network" ]] && cp -a "${HELPER_DIR}/network" "${TEMP_DIR}/network-helper"
 [[ -f "${AUTH_FILE}" ]] && cp -a "${AUTH_FILE}" "${TEMP_DIR}/auth.json"
 [[ -f "${MTPROXY_ENV}" ]] && cp -a "${MTPROXY_ENV}" "${TEMP_DIR}/mtproxy.env"
 [[ -f "${UFW_APP_FILE}" ]] && cp -a "${UFW_APP_FILE}" "${TEMP_DIR}/mtproxy.ufw-profile"
@@ -172,15 +201,25 @@ fi
 cp -a "${XRAY_BIN}" "${TEMP_DIR}/xray.binary"
 install -d -m 0700 "${TEMP_DIR}/xray-assets"
 cp -a "${XRAY_ASSET_DIR}/geoip.dat" "${XRAY_ASSET_DIR}/geosite.dat" "${TEMP_DIR}/xray-assets/"
+if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy-refresh.timer; then
+  LEGACY_REFRESH_ENABLED=1
+fi
 ROLLBACK_READY=1
 mv "${INSTALL_DIR}/src" "${BACKUP_SRC}"
 BACKUP_OWNED=1
 mv "${STAGED_SRC}" "${INSTALL_DIR}/src"
 STAGED_OWNED=0
+if [[ -f "${SYSTEMD_DIR}/mtproxy-refresh.timer" || "${LEGACY_REFRESH_ENABLED}" == 1 ]]; then
+  "${SYSTEMCTL_BIN}" disable --now mtproxy-refresh.timer
+fi
 install -m 0644 "${ROOT}"/systemd/*.service "${ROOT}"/systemd/*.timer "${SYSTEMD_DIR}/"
+for unit in "${LEGACY_UNITS[@]}"; do
+  rm -f -- "${SYSTEMD_DIR}/${unit}"
+done
 install -d -m 0755 "${HELPER_DIR}"
 install -m 0755 "${ROOT}/scripts/mtproxy.sh" "${HELPER_DIR}/mtproxy"
 install -m 0755 "${ROOT}/scripts/mtproxy-run" "${HELPER_DIR}/mtproxy-run"
+install -m 0755 "${ROOT}/scripts/domain-firewall.sh" "${HELPER_DIR}/network"
 install -d -m 0755 "${UFW_APP_DIR}"
 install -m 0644 "${ROOT}/ufw/vpnctl-mtproxy" "${UFW_APP_DIR}/vpnctl-mtproxy"
 
@@ -198,8 +237,9 @@ VPNCTL_SYSTEMCTL_BIN="${SYSTEMCTL_BIN}" \
 VPNCTL_NGINX_BIN="${NGINX_BIN}" \
 XRAY_LOCATION_ASSET="${STAGED_XRAY}/payload" \
 "${PYTHON_BIN}" - <<'PY'
-from vpnctl.agent import install_nginx, load_state, validate_and_install_xray
+from vpnctl.agent import install_nginx, load_state, sync_domain_certificate, validate_and_install_xray
 state = load_state()
+sync_domain_certificate(state)
 validate_and_install_xray(state)
 install_nginx(state)
 PY
@@ -207,6 +247,14 @@ PY
 log "Installing verified Xray ${XRAY_VERSION}"
 xray_install_stage "${STAGED_XRAY}" "${XRAY_BIN}" "${XRAY_ASSET_DIR}"
 XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" "${XRAY_BIN}" run -test -config "${XRAY_CONFIG}"
+
+install -d -m 0755 "$(dirname -- "${RENEW_HOOK}")"
+cat >"${RENEW_HOOK}" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+/usr/local/bin/vpnctl certificate deploy
+EOF
+chmod 0755 "${RENEW_HOOK}"
 
 log "Restarting services"
 "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web

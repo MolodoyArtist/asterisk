@@ -39,6 +39,7 @@ def main() -> None:
     cert = sub.add_parser("certificate")
     cert_sub = cert.add_subparsers(dest="cert_command", required=True)
     cert_sub.add_parser("renew")
+    cert_sub.add_parser("deploy")
 
     telegram = sub.add_parser("telegram")
     telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
@@ -76,7 +77,7 @@ def main() -> None:
             elif args.domain_command == "add":
                 emit(call("domain_add", {"domain": args.hostname}))
         elif args.command == "certificate":
-            emit(call("certificate_renew"))
+            emit(call(f"certificate_{args.cert_command}"))
         elif args.command == "telegram":
             emit(call(f"telegram_{args.telegram_command}"))
     except RPCError as exc:

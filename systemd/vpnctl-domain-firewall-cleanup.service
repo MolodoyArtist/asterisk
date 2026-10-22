@@ -1,0 +1,7 @@
+[Unit]
+Description=Rollback owned domain profile firewall rule
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/local/lib/vpnctl/network cleanup

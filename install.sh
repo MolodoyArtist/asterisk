@@ -43,7 +43,7 @@ DISK_KIB="$(df -Pk / | awk 'NR == 2 {print $4}')"
 (( MEMORY_KIB >= 524288 )) || die "At least 512 MiB of RAM is required."
 (( DISK_KIB >= 2097152 )) || die "At least 2 GiB of free disk space is required."
 if command -v ss >/dev/null 2>&1; then
-  for required_port in 80 443 8443; do
+  for required_port in 80 443 9443; do
     if ss -H -ltn "sport = :${required_port}" | grep -q .; then
       die "TCP port ${required_port} is already in use. Run this only on a fresh VPS."
     fi
@@ -92,6 +92,7 @@ install -m 0644 "${SOURCE_DIR}"/systemd/*.service "${SOURCE_DIR}"/systemd/*.time
 install -d -o root -g root -m 0755 /usr/local/lib/vpnctl
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy.sh" /usr/local/lib/vpnctl/mtproxy
 install -m 0755 "${INSTALL_DIR}/scripts/mtproxy-run" /usr/local/lib/vpnctl/mtproxy-run
+install -m 0755 "${INSTALL_DIR}/scripts/domain-firewall.sh" /usr/local/lib/vpnctl/network
 install -m 0644 "${SOURCE_DIR}/ufw/vpnctl-mtproxy" /etc/ufw/applications.d/vpnctl-mtproxy
 cat >/usr/local/bin/vpnctl <<'EOF'
 #!/usr/bin/env bash
@@ -126,25 +127,6 @@ PY
   fi
 fi
 
-log "Selecting a tested REALITY camouflage target"
-if [[ -z "${REALITY_TARGET}" ]]; then
-  reality_select_target "${PUBLIC_IP}" "${REALITY_TARGETS}" /usr/local/bin/xray || \
-    die "No tested non-Cloudflare REALITY target is reachable. Set VPNCTL_REALITY_TARGET=hostname and try again."
-  REALITY_TARGET="${REALITY_SELECTED_TARGET}"
-else
-  /usr/local/bin/xray tls ping "${REALITY_TARGET}" >/dev/null 2>&1 || die "The selected REALITY target did not complete a TLS check."
-  REALITY_SERVER_ASN="$(reality_ipv4_asn "${PUBLIC_IP}" || true)"
-  REALITY_TARGET_ASN="$(reality_target_asn "${REALITY_TARGET}" || true)"
-  REALITY_TARGET_MODE=custom
-fi
-printf 'Camouflage target selected: %s (mode: %s, VPS ASN: %s, target ASN: %s)\n' \
-  "${REALITY_TARGET}" "${REALITY_TARGET_MODE:-unknown}" "${REALITY_SERVER_ASN:-unknown}" "${REALITY_TARGET_ASN:-unknown}"
-if [[ "${REALITY_TARGET_MODE:-}" == fallback ]]; then
-  printf '%s\n' 'Warning: no same-AS target was found. A tested non-Cloudflare fallback was selected; set VPNCTL_REALITY_TARGET to use your own reviewed target.' >&2
-elif [[ "${REALITY_TARGET_MODE:-}" == custom && "${REALITY_TARGET_ASN:-}" == 13335 ]]; then
-  printf '%s\n' 'Warning: the custom target resolves to Cloudflare ASN 13335; failed REALITY authentication is forwarded to that target.' >&2
-fi
-
 # Open validation and HTTPS before asking the CA to reach the machine. Preserve
 # the active SSH destination port and configured sshd ports so enabling UFW
 # cannot lock out an SSH session or a console installation with a custom port.
@@ -164,7 +146,7 @@ for ssh_port in "${SSH_PORTS[@]}"; do
 done
 ufw allow 80/tcp comment 'HTTP certificate validation' >/dev/null
 ufw allow 443/tcp comment 'HTTPS' >/dev/null
-ufw allow 8443/tcp comment 'Account portal and domain profile' >/dev/null
+ufw allow 9443/tcp comment 'Account portal' >/dev/null
 ufw --force enable >/dev/null
 
 MODE=ip
@@ -193,6 +175,28 @@ if ipv6 and ipv6 != {expected_v6}:
     raise SystemExit("Every domain AAAA answer must point only to this VPS. Remove or correct it.")
 PY
   fi
+fi
+
+if [[ "${MODE}" == ip ]]; then
+log "Selecting a tested REALITY camouflage target"
+if [[ -z "${REALITY_TARGET}" ]]; then
+  reality_select_target "${PUBLIC_IP}" "${REALITY_TARGETS}" /usr/local/bin/xray || \
+    die "No tested non-Cloudflare REALITY target is reachable. Set VPNCTL_REALITY_TARGET=hostname and try again."
+  REALITY_TARGET="${REALITY_SELECTED_TARGET}"
+else
+  /usr/local/bin/xray tls ping "${REALITY_TARGET}" >/dev/null 2>&1 || die "The selected REALITY target did not complete a TLS check."
+  REALITY_SERVER_ASN="$(reality_ipv4_asn "${PUBLIC_IP}" || true)"
+  REALITY_TARGET_ASN="$(reality_target_asn "${REALITY_TARGET}" || true)"
+  REALITY_TARGET_MODE=custom
+fi
+printf 'Camouflage target selected: %s (mode: %s, VPS ASN: %s, target ASN: %s)\n' \
+  "${REALITY_TARGET}" "${REALITY_TARGET_MODE:-unknown}" "${REALITY_SERVER_ASN:-unknown}" "${REALITY_TARGET_ASN:-unknown}"
+if [[ "${REALITY_TARGET_MODE:-}" == fallback ]]; then
+  printf '%s\n' 'Warning: no same-AS target was found. A tested non-Cloudflare fallback was selected; set VPNCTL_REALITY_TARGET to use your own reviewed target.' >&2
+elif [[ "${REALITY_TARGET_MODE:-}" == custom && "${REALITY_TARGET_ASN:-}" == 13335 ]]; then
+  printf '%s\n' 'Warning: the custom target resolves to Cloudflare ASN 13335; failed REALITY authentication is forwarded to that target.' >&2
+fi
+
 fi
 
 log "Preparing certificate challenge"
@@ -229,6 +233,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj '/CN=localhost' \
 chmod 0600 /etc/vpnctl/tls/default.key
 chmod 0644 /etc/vpnctl/tls/default.crt
 
+if [[ "${MODE}" == ip ]]; then
 log "Generating REALITY credentials"
 REALITY_KEYS="$(/usr/local/bin/xray x25519)"
 REALITY_PRIVATE_KEY="$(awk -F': ' '/^Private( key|Key):/{print $2; exit}' <<<"${REALITY_KEYS}")"
@@ -241,25 +246,33 @@ import sys
 validate_domain(sys.argv[1])
 PY
 
+fi
+
 log "Generating private configuration"
 BOOTSTRAP=(/usr/bin/python3 -m vpnctl.bootstrap --public-ip "${PUBLIC_IP}" --output "${RESULT_FILE}")
 [[ -n "${PUBLIC_IPV6}" ]] && BOOTSTRAP+=(--public-ipv6 "${PUBLIC_IPV6}")
 [[ "${MODE}" == domain ]] && BOOTSTRAP+=(--domain "${DOMAIN}")
-BOOTSTRAP+=(--reality-target "${REALITY_TARGET}" --reality-private-key "${REALITY_PRIVATE_KEY}" --reality-public-key "${REALITY_PUBLIC_KEY}" --reality-short-id "${REALITY_SHORT_ID}")
+if [[ "${MODE}" == ip ]]; then
+  BOOTSTRAP+=(--reality-target "${REALITY_TARGET}" --reality-private-key "${REALITY_PRIVATE_KEY}" --reality-public-key "${REALITY_PUBLIC_KEY}" --reality-short-id "${REALITY_SHORT_ID}")
+fi
 PYTHONPATH="${INSTALL_DIR}/src" "${BOOTSTRAP[@]}"
 PYTHONPATH="${INSTALL_DIR}/src" XRAY_LOCATION_ASSET=/usr/local/share/xray /usr/bin/python3 - <<'PY'
-from vpnctl.agent import install_nginx, load_state, validate_and_install_xray
+from vpnctl.agent import install_nginx, load_state, sync_domain_certificate, validate_and_install_xray
 state = load_state()
+sync_domain_certificate(state)
 validate_and_install_xray(state)
 install_nginx(state)
 PY
+
+if [[ "${MODE}" == domain ]]; then
+  /usr/local/lib/vpnctl/network enable
+fi
 
 install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 cat >/etc/letsencrypt/renewal-hooks/deploy/reload-nginx <<'EOF'
 #!/usr/bin/env bash
 set -eu
-/usr/sbin/nginx -t
-/bin/systemctl reload nginx
+/usr/local/bin/vpnctl certificate deploy
 EOF
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx
 

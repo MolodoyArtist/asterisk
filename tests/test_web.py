@@ -61,6 +61,22 @@ class WebTests(unittest.TestCase):
         token, csrf = make_session("member-test", self.session_secret)
         return {"Cookie": f"__Host-session={token}"}, csrf
 
+    def test_json_download_requires_session_and_does_not_cache_credentials(self):
+        path = "/config.json?name=phone&profile=hysteria"
+        with mock.patch("vpnctl.web.call") as call:
+            status, _, _ = self.request("GET", path)
+        self.assertEqual(status, 404)
+        call.assert_not_called()
+        headers, _ = self.authenticated_headers()
+        with mock.patch("vpnctl.web.call", return_value={"filename": "unsafe\r\nX-Test: injected", "config": {"outbounds": []}}) as call:
+            status, response, body = self.request("GET", path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"outbounds": []})
+        self.assertEqual(response["Content-Disposition"], 'attachment; filename="hysteria-config.json"')
+        self.assertIn("no-store", response["Cache-Control"])
+        self.assertNotIn("X-Test", response)
+        call.assert_called_once_with("client_json", {"name": "phone", "profile": "hysteria"})
+
     def test_public_root_is_only_generic_login(self):
         status, headers, body = self.request("GET", "/")
         self.assertEqual(status, 200)
@@ -189,7 +205,7 @@ class WebTests(unittest.TestCase):
         with mock.patch("vpnctl.web.call", return_value={"domain": "access.example.com"}):
             status, response_headers, _ = self.request("POST", "/domain/add", body, headers)
         self.assertEqual(status, 303)
-        self.assertEqual(response_headers["Location"], "https://access.example.com:8443/domain?added=1")
+        self.assertEqual(response_headers["Location"], "https://access.example.com:9443/domain?added=1")
 
     def test_telegram_workflow_requires_csrf_and_stays_local(self):
         headers, csrf = self.authenticated_headers()
