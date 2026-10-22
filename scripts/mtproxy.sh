@@ -97,8 +97,5 @@ case "${1:-}" in
   configure) configure ;;
   provision) provision ;;
   cleanup) cleanup ;;
-  # Kept as no-ops for safe updates from the old refresh timer. mtg does not
-  # require Telegram's official MTProxy configuration download mechanism.
-  refresh|refresh-and-restart) : ;;
   *) die "Usage: $0 {prepare|configure|provision|cleanup}" ;;
 esac

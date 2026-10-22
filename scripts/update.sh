@@ -27,6 +27,12 @@ RENEW_HOOK="${VPNCTL_RENEW_HOOK:-/etc/letsencrypt/renewal-hooks/deploy/reload-ng
 ROLLBACK_READY=0
 STAGED_OWNED=0
 BACKUP_OWNED=0
+LEGACY_REFRESH_ENABLED=0
+UNITS=(vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer
+  xray.service mtproxy.service vpnctl-mtproxy-provision.service
+  vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service
+  vpnctl-domain-firewall.service vpnctl-domain-firewall-cleanup.service)
+LEGACY_UNITS=(mtproxy-refresh.service mtproxy-refresh.timer)
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -48,7 +54,7 @@ finish() {
     else
       restore_failed=1
     fi
-    for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy.service mtproxy-refresh.service mtproxy-refresh.timer vpnctl-mtproxy-provision.service vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service vpnctl-domain-firewall.service vpnctl-domain-firewall-cleanup.service; do
+    for unit in "${UNITS[@]}" "${LEGACY_UNITS[@]}"; do
       if [[ -f "${TEMP_DIR}/units/${unit}" ]]; then
         install -m 0644 "${TEMP_DIR}/units/${unit}" "${SYSTEMD_DIR}/${unit}" || restore_failed=1
       elif [[ -f "${TEMP_DIR}/units/${unit}.missing" ]]; then
@@ -111,6 +117,9 @@ finish() {
     if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy; then
       "${SYSTEMCTL_BIN}" restart mtproxy || true
     fi
+    if [[ "${LEGACY_REFRESH_ENABLED}" == 1 ]]; then
+      "${SYSTEMCTL_BIN}" enable --now mtproxy-refresh.timer || restore_failed=1
+    fi
     if [[ "${restore_failed}" -eq 0 ]]; then
       ROLLBACK_READY=0
     else
@@ -169,7 +178,7 @@ else
 fi
 
 install -d -m 0700 "${TEMP_DIR}/units"
-for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy.service mtproxy-refresh.service mtproxy-refresh.timer vpnctl-mtproxy-provision.service vpnctl-mtproxy-configure.service vpnctl-mtproxy-cleanup.service vpnctl-domain-firewall.service vpnctl-domain-firewall-cleanup.service; do
+for unit in "${UNITS[@]}" "${LEGACY_UNITS[@]}"; do
   if [[ -f "${SYSTEMD_DIR}/${unit}" ]]; then
     cp -a "${SYSTEMD_DIR}/${unit}" "${TEMP_DIR}/units/${unit}"
   else
@@ -192,12 +201,21 @@ fi
 cp -a "${XRAY_BIN}" "${TEMP_DIR}/xray.binary"
 install -d -m 0700 "${TEMP_DIR}/xray-assets"
 cp -a "${XRAY_ASSET_DIR}/geoip.dat" "${XRAY_ASSET_DIR}/geosite.dat" "${TEMP_DIR}/xray-assets/"
+if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy-refresh.timer; then
+  LEGACY_REFRESH_ENABLED=1
+fi
 ROLLBACK_READY=1
 mv "${INSTALL_DIR}/src" "${BACKUP_SRC}"
 BACKUP_OWNED=1
 mv "${STAGED_SRC}" "${INSTALL_DIR}/src"
 STAGED_OWNED=0
+if [[ -f "${SYSTEMD_DIR}/mtproxy-refresh.timer" || "${LEGACY_REFRESH_ENABLED}" == 1 ]]; then
+  "${SYSTEMCTL_BIN}" disable --now mtproxy-refresh.timer
+fi
 install -m 0644 "${ROOT}"/systemd/*.service "${ROOT}"/systemd/*.timer "${SYSTEMD_DIR}/"
+for unit in "${LEGACY_UNITS[@]}"; do
+  rm -f -- "${SYSTEMD_DIR}/${unit}"
+done
 install -d -m 0755 "${HELPER_DIR}"
 install -m 0755 "${ROOT}/scripts/mtproxy.sh" "${HELPER_DIR}/mtproxy"
 install -m 0755 "${ROOT}/scripts/mtproxy-run" "${HELPER_DIR}/mtproxy-run"
@@ -241,7 +259,6 @@ chmod 0755 "${RENEW_HOOK}"
 log "Restarting services"
 "${SYSTEMCTL_BIN}" restart xray vpnctl-agent vpnctl-web
 if "${SYSTEMCTL_BIN}" is-enabled --quiet mtproxy; then
-  "${SYSTEMCTL_BIN}" disable --now mtproxy-refresh.timer
   "${SYSTEMCTL_BIN}" start vpnctl-mtproxy-configure.service
   "${SYSTEMCTL_BIN}" restart mtproxy
 fi
