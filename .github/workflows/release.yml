@@ -40,7 +40,9 @@ jobs:
         run: |
           gh release create "${RELEASE_TAG}" \
             --title "vpnctl ${RELEASE_TAG}" \
-            --generate-notes \
+            --verify-tag \
+            --latest \
+            --notes-from-tag \
             "vpnctl-${RELEASE_TAG}.tar.gz" \
             "vpnctl-bootstrap-${RELEASE_TAG}.sh" \
             install.sh \

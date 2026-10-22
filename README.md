@@ -5,8 +5,7 @@
 Your own proxy on a fresh VPS: one command, a web panel, no manual config editing.
 Open source, no analytics. Credentials are generated on your server.
 
-> **Branch preview:** this setup is not released yet. The install command below
-> becomes available when the next release is published.
+**[Release v0.3.0](https://github.com/MolodoyArtist/asterisk/releases/tag/v0.3.0)**
 
 ## Install
 
