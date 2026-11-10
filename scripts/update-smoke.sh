@@ -21,6 +21,17 @@ fi
 if [[ "${0##*/}" == xray && "${1:-}" == x25519 ]]; then
   printf '%s\n' 'Private key: smoke-private-key' 'Public key: smoke-public-key'
 fi
+if [[ "${0##*/}" == sysctl ]]; then
+  case "$*" in
+    '-n net.ipv4.tcp_congestion_control') printf '%s\n' cubic ;;
+    '-n net.ipv4.tcp_available_congestion_control') printf '%s\n' 'reno cubic' ;;
+    '-qw net.ipv4.tcp_congestion_control=bbr') printf '%s\n' "$*" >>"${VPNCTL_SMOKE_COMMAND_LOG}" ;;
+    *) exit 1 ;;
+  esac
+fi
+if [[ "${0##*/}" == modprobe && "${VPNCTL_SMOKE_NO_BBR:-0}" == 1 ]]; then
+  exit 1
+fi
 exit 0
 EOF
   chmod 0755 "${path}"
@@ -29,7 +40,7 @@ EOF
 prepare_case() {
   local case_dir=$1
   mkdir -p "${case_dir}/install/src" "${case_dir}/state" "${case_dir}/config" \
-    "${case_dir}/nginx" "${case_dir}/systemd" "${case_dir}/bin"
+    "${case_dir}/nginx" "${case_dir}/systemd" "${case_dir}/bin" "${case_dir}/assets"
   cp -a "${ROOT}/src/." "${case_dir}/install/src/"
   touch "${case_dir}/install/src/old-version-marker"
   cat >"${case_dir}/state/state.json" <<'EOF'
@@ -47,10 +58,12 @@ prepare_case() {
 EOF
   printf '%s\n' 'old xray configuration' >"${case_dir}/config/xray.json"
   printf '%s\n' 'old nginx configuration' >"${case_dir}/nginx/vpnctl"
+  printf '%s\n' 'old geoip' >"${case_dir}/assets/geoip.dat"
+  printf '%s\n' 'old geosite' >"${case_dir}/assets/geosite.dat"
   for unit in vpnctl-agent.service vpnctl-web.service vpnctl-health.service vpnctl-health.timer xray.service mtproxy-refresh.service mtproxy-refresh.timer; do
     printf 'old %s\n' "${unit}" >"${case_dir}/systemd/${unit}"
   done
-  for command in systemctl nginx xray vpnctl ufw; do
+  for command in systemctl nginx xray vpnctl ufw sysctl modprobe; do
     make_fake_command "${case_dir}/bin/${command}"
   done
   mkdir -p "${case_dir}/xray-stage"
@@ -77,6 +90,9 @@ run_update() {
   VPNCTL_HELPER_DIR="${case_dir}/helpers" \
   VPNCTL_MTPROXY_ENV="${case_dir}/mtproxy/mtg.toml" \
   VPNCTL_UFW_APP_DIR="${case_dir}/ufw-applications" \
+  VPNCTL_TCP_ETC_DIR="${case_dir}/etc" \
+  VPNCTL_SYSCTL_BIN="${case_dir}/bin/sysctl" \
+  VPNCTL_MODPROBE_BIN="${case_dir}/bin/modprobe" \
   VPNCTL_PYTHON_BIN="${VPNCTL_TEST_PYTHON:-/usr/bin/python3}" \
   VPNCTL_LOCK_HELD=1 \
   VPNCTL_SMOKE_FAIL_DOCTOR="${fail_doctor}" \
@@ -86,9 +102,6 @@ run_update() {
 
 success_dir="${TEMP_ROOT}/success"
 prepare_case "${success_dir}"
-mkdir -p "${success_dir}/assets"
-printf '%s\n' 'old geoip' >"${success_dir}/assets/geoip.dat"
-printf '%s\n' 'old geosite' >"${success_dir}/assets/geosite.dat"
 run_update "${success_dir}" 0
 [[ ! -e "${success_dir}/install/src/old-version-marker" ]]
 grep -q '^Wants=nginx.service xray.service$' "${success_dir}/systemd/vpnctl-agent.service"
@@ -101,12 +114,12 @@ grep -q '^new geoip$' "${success_dir}/assets/geoip.dat"
 [[ ! -e "${success_dir}/systemd/mtproxy-refresh.service" ]]
 [[ ! -e "${success_dir}/systemd/mtproxy-refresh.timer" ]]
 grep -Fxq 'disable --now mtproxy-refresh.timer' "${success_dir}/commands.log"
+grep -Fxq 'net.ipv4.tcp_congestion_control = bbr' "${success_dir}/etc/sysctl.d/99-vpnctl-bbr.conf"
+grep -Fxq 'tcp_bbr' "${success_dir}/etc/modules-load.d/vpnctl-bbr.conf"
+grep -Fxq -- '-qw net.ipv4.tcp_congestion_control=bbr' "${success_dir}/commands.log"
 
 rollback_dir="${TEMP_ROOT}/rollback"
 prepare_case "${rollback_dir}"
-mkdir -p "${rollback_dir}/assets"
-printf '%s\n' 'old geoip' >"${rollback_dir}/assets/geoip.dat"
-printf '%s\n' 'old geosite' >"${rollback_dir}/assets/geosite.dat"
 state_before="$(sha256sum "${rollback_dir}/state/state.json" | awk '{print $1}')"
 if run_update "${rollback_dir}" 1; then
   echo 'the intentionally failing update unexpectedly succeeded' >&2
@@ -122,6 +135,19 @@ grep -q '^old geoip$' "${rollback_dir}/assets/geoip.dat"
 [[ ! -e "${rollback_dir}/helpers/mtproxy" ]]
 grep -q '^old mtproxy-refresh.timer$' "${rollback_dir}/systemd/mtproxy-refresh.timer"
 grep -Fxq 'enable --now mtproxy-refresh.timer' "${rollback_dir}/commands.log"
+[[ ! -e "${rollback_dir}/etc/sysctl.d/99-vpnctl-bbr.conf" ]]
+
+unsupported_dir="${TEMP_ROOT}/unsupported-bbr"
+prepare_case "${unsupported_dir}"
+VPNCTL_SMOKE_NO_BBR=1 run_update "${unsupported_dir}" 0
+[[ ! -e "${unsupported_dir}/etc/sysctl.d/99-vpnctl-bbr.conf" ]]
+
+custom_dir="${TEMP_ROOT}/custom-tcp-policy"
+prepare_case "${custom_dir}"
+mkdir -p "${custom_dir}/etc/sysctl.d"
+printf '%s\n' 'net.ipv4.tcp_congestion_control = cubic' >"${custom_dir}/etc/sysctl.d/custom.conf"
+run_update "${custom_dir}" 0
+[[ ! -e "${custom_dir}/etc/sysctl.d/99-vpnctl-bbr.conf" ]]
 
 recovery_dir="${TEMP_ROOT}/existing-recovery"
 prepare_case "${recovery_dir}"

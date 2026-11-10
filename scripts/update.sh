@@ -269,4 +269,5 @@ sleep 2
 ROLLBACK_READY=0
 rm -rf -- "${BACKUP_SRC}"
 BACKUP_OWNED=0
+bash "${ROOT}/scripts/tcp-bbr.sh" || printf 'Warning: could not enable TCP BBR.\n' >&2
 log "Update complete"

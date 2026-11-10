@@ -327,3 +327,4 @@ printf '\nA root-only copy is stored in %s. Delete it after saving the credentia
 if [[ "${MODE}" == ip ]]; then
   printf 'IP mode is ready. Sign in to the panel and follow Domain setup for the recommended permanent configuration.\n'
 fi
+bash "${SOURCE_DIR}/scripts/tcp-bbr.sh" || printf 'Warning: could not enable TCP BBR.\n' >&2
