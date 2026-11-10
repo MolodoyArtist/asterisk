@@ -212,7 +212,7 @@ class CommonTests(unittest.TestCase):
         self.assertIn("error_page 404 = @not_found", config)
         self.assertIn("limit_req zone=vpnctl_login", config)
         self.assertIn("limit_conn_zone $binary_remote_addr zone=vpnctl_xhttp_conn", config)
-        self.assertIn("limit_conn vpnctl_xhttp_conn 32", config)
+        self.assertIn("limit_conn vpnctl_xhttp_conn 96;", config)
         self.assertIn("client_max_body_size 0", config)
         self.assertIn("client_max_body_size 16k", config)
         self.assertIn("server_name access.example.com", config)

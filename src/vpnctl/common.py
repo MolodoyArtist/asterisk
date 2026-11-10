@@ -339,7 +339,7 @@ def _application_server(name: str, cert_name: str, default: bool, state: dict[st
     if with_xhttp:
         xhttp = f'''    location ^~ /{state["xhttp_path"]}/ {{
         client_max_body_size 0;
-        limit_conn vpnctl_xhttp_conn 32;
+        limit_conn vpnctl_xhttp_conn 96;
         proxy_pass http://127.0.0.1:5555;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
